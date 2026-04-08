@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visor de Alertas - España</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<header>
+  <div class="header-left">
+    <h1>Visor de Alertas España</h1>
+    <span class="demo-badge">DEMO</span>
+  </div>
+  <div id="stats-bar">Cargando datos...</div>
+</header>
+
+<div class="main">
+  <div id="map-container">
+    <div id="map"></div>
+
+    <!-- Leyenda WMS flotante -->
+    <div id="wms-legend" style="display:none"></div>
+
+    <!-- Barra temporal -->
+    <div id="timeline">
+      <div id="timeline-top">
+        <div id="timeline-label">
+          <span id="tl-badge">AHORA</span>
+          <span id="tl-datetime"></span>
+        </div>
+        <div id="timeline-controls">
+          <button id="tl-play" onclick="togglePlay()">&#9654; Play</button>
+          <button id="tl-reset" onclick="resetTimeline()">&#8635; Ahora</button>
+        </div>
+      </div>
+      <input type="range" id="tl-slider" min="0" max="100" value="0"
+             oninput="onSliderInput(this.value)"/>
+      <div id="tl-ticks"></div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+
+    <!-- Capas datos -->
+    <div class="section-fixed">
+      <div class="section-title">Datos</div>
+      <label class="layer-row">
+        <span class="dot" style="background:#FFA500"></span>
+        Avisos AEMET
+        <input type="checkbox" id="chk-alerts" checked />
+      </label>
+      <label class="layer-row">
+        <span class="dot" style="background:#CC0000"></span>
+        Focos NASA FIRMS
+        <input type="checkbox" id="chk-fires" />
+      </label>
+    </div>
+
+    <!-- Capas contextuales WMS -->
+    <div class="section-fixed">
+      <div class="section-title">Capas de riesgo</div>
+      <label class="layer-row">
+        <span class="dot" style="background:#1e90ff"></span>
+        Zonas inundables T=100 (MITECO)
+        <input type="checkbox" id="chk-flood"/>
+      </label>
+      <label class="layer-row">
+        <span class="dot" style="background:#8B0000"></span>
+        Peligro propagación incendio FWI (EFFIS)
+        <input type="checkbox" id="chk-effis_fwi"/>
+      </label>
+      <label class="layer-row">
+        <span class="dot" style="background:#8B6914"></span>
+        Índice sequía DC (EFFIS)
+        <input type="checkbox" id="chk-effis_dc"/>
+      </label>
+      <label class="layer-row">
+        <span class="dot" style="background:#267300"></span>
+        Usos del suelo - CORINE (IGN)
+        <input type="checkbox" id="chk-corine"/>
+      </label>
+    </div>
+
+    <!-- Filtros -->
+    <div class="section-fixed">
+
+      <div class="filter-block">
+        <div class="section-title">Nivel de peligro</div>
+        <div class="filter-row" id="level-filters">
+          <button class="fbtn verde active"    data-level="Verde">Verde</button>
+          <button class="fbtn amarillo active" data-level="Amarillo">Amarillo</button>
+          <button class="fbtn naranja active"  data-level="Naranja">Naranja</button>
+          <button class="fbtn rojo active"     data-level="Rojo">Rojo</button>
+        </div>
+        <div class="filter-row" id="level-filters">
+          <button class="fbtn all active"  data-level="all">Todos</button>
+          <button class="fbtn none"        data-level="none">Ninguno</button>
+        </div>
+      </div>
+
+      <div class="filter-block">
+        <div class="section-title">Tipo de aviso</div>
+        <select id="event-select">
+          <option value="all">Todos los tipos</option>
+        </select>
+      </div>
+
+    </div>
+
+    <!-- Lista dinámica -->
+    <div class="list-header">
+      <span id="list-title">Avisos activos</span>
+      <span id="list-count"></span>
+    </div>
+    <div id="main-list" class="list-scroll">
+      <div class="empty">Cargando...</div>
+    </div>
+
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
