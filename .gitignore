@@ -1,3 +1,4 @@
 .env
 __pycache__/
 *.pyc
+data/CLC2018_ES.gpkg

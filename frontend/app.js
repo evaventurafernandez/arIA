@@ -22,6 +22,11 @@ resetBtn.onAdd = () => {
       const chk = document.getElementById('chk-' + key);
       if (chk) chk.checked = false;
     });
+    // Resetear CORINE
+    if (corineLayer) { map.removeLayer(corineLayer); }
+    corineVisible = false;
+    const chkC = document.getElementById('chk-corine');
+    if (chkC) chkC.checked = false;
     updateLegend();
   };
   L.DomEvent.disableClickPropagation(btn);
@@ -60,7 +65,8 @@ const WMS_DEFS = {
     opacity: 0.6,
     version: '1.3.0',
   },
-  corine: {
+  // WMS CORINE completo (44 clases) — desactivado de momento, disponible para uso futuro
+  corine_wms: {
     url:     'https://servicios.idee.es/wms-inspire/ocupacion-suelo',
     layer:   'LC.LandCoverSurfaces',  // CORINE Land Cover 2018 + SIOSE — IGN
     time:    null,                    // capa estática, actualización cada 6 años
@@ -141,28 +147,40 @@ const WMS_LEGENDS = {
     ],
     note: 'MITECO/SNCZI - capa estática oficial España'
   },
-  corine: {
-    title: 'Usos del suelo',
+  corine_wms: {
+    title: 'Usos del suelo CORINE 2018 (IGN)',
     items: [
-      { color: '#267300', label: 'Bosque de coníferas' },
-      { color: '#4ce600', label: 'Bosque de frondosas' },
-      { color: '#70a800', label: 'Bosque mixto' },
-      { color: '#a8a800', label: 'Matorral y brezal' },
-      { color: '#d4a46a', label: 'Vegetación esclerófila mediterránea' },
-      { color: '#ffffa8', label: 'Cultivos en secano' },
-      { color: '#e6e600', label: 'Mosaico de cultivos' },
+      { color: '#e6004d', label: 'Tejido urbano' }, //11
+      { color: '#cc4df2', label: 'Industrial y comercial' }, //12
+      { color: '#cccccc', label: 'Extracción minera' }, //13
+      { color: '#a6e6cc', label: 'Zonas verdes artificiales' }, //14
+      { color: '#ffffa8', label: 'Tierras de labor' }, //21
+      { color: '#ffff00', label: 'Cultivos permanentes' }, //22
+      { color: '#e6e64d', label: 'Praderas' }, //23
+      { color: '#e6cc4d', label: 'Zonas agrícolas heterogéneas' }, //24
+      { color: '#267300', label: 'Bosques' }, //31
+      { color: '#70a800', label: 'Vegetación arbustiva y herbácea' }, //32
+      { color: '#ccaa4d', label: 'Espacios abiertos sin vegetación' }, //33
+      { color: '#a6a6ff', label: 'Zonas húmedas continentales' }, //41
+      { color: '#4d4dff', label: 'Zonas húmedas costeras' }, //42
+      { color: '#80d4ff', label: 'Aguas continentales' }, //51
+      { color: '#00ccf2', label: 'Aguas marinas' }, //52
     ],
-    note: 'CORINE Land Cover 2018 - IGN'
+    note: 'CORINE Land Cover 2018 · IGN/CNIG · nivel 2'
   },
 };
 
 function updateLegend() {
   const el = document.getElementById('wms-legend');
   if (!el) return;
-  const activeKeys = Object.keys(wmsActive);
-  if (!activeKeys.length) { el.style.display = 'none'; return; }
+ 
+  const wmsKeys = Object.keys(wmsActive);
+  const showCorine = corineVisible && corineLayer;
+  if (!wmsKeys.length && !showCorine) { el.style.display = 'none'; return; }
+ 
   el.style.display = 'block';
-  el.innerHTML = activeKeys.map(key => {
+ 
+  const wmsHtml = wmsKeys.map(key => {
     const leg = WMS_LEGENDS[key];
     if (!leg) return '';
     const items = leg.items.map(i =>
@@ -177,6 +195,87 @@ function updateLegend() {
       <div class="leg-note">${leg.note}</div>
     </div>`;
   }).join('');
+ 
+  const corineHtml = showCorine ? (() => {
+    const items = CORINE_LEGEND.items.map(i =>
+      `<div class="leg-item">
+        <span class="leg-dot" style="background:${i.color}"></span>
+        <span class="leg-label">${i.label}</span>
+      </div>`
+    ).join('');
+    return `<div class="leg-block">
+      <div class="leg-title">${CORINE_LEGEND.title}</div>
+      ${items}
+      <div class="leg-note">${CORINE_LEGEND.note}</div>
+    </div>`;
+  })() : '';
+ 
+  el.innerHTML = wmsHtml + corineHtml;
+}
+ 
+// ── CORINE: capa vectorial propia (GeoJSON filtrado desde backend) ────────
+let corineLayer   = null;   // L.geoJSON instance
+let corineLoaded  = false;  // evitar recargar
+let corineVisible = false;
+ 
+const CORINE_LEGEND = {
+  title: 'Usos del suelo — riesgo de incendio',
+  items: [
+    { color: '#267300', label: 'Bosque de coníferas (muy alto riesgo)' },
+    { color: '#4ce600', label: 'Bosque de frondosas (alto riesgo)' },
+    { color: '#70a800', label: 'Bosque mixto (alto riesgo)' },
+    { color: '#a8a800', label: 'Brezales y matorrales (alto riesgo)' },
+    { color: '#d4a46a', label: 'Vegetación esclerófila mediterránea' },
+    { color: '#d4e6a5', label: 'Pastizales naturales (riesgo medio)' },
+    { color: '#ffffa8', label: 'Cultivos en secano (riesgo medio)' },
+    { color: '#e6e600', label: 'Mosaico de cultivos' },
+  ],
+  note: 'CORINE Land Cover 2018 · IGN/CNIG · clases forestales y agrícolas'
+};
+ 
+async function loadCorineLayer() {
+  if (corineLoaded) return;
+  corineLoaded = true;
+  try {
+    const data = await fetch('/api/landcover').then(r => r.json());
+    corineLayer = L.geoJSON(data, {
+      style: f => ({
+        color:       f.properties.color,
+        fillColor:   f.properties.color,
+        fillOpacity: 0.55,
+        weight:      0.3,
+        opacity:     0.5,
+      }),
+      onEachFeature: (f, layer) => {
+        layer.bindTooltip(f.properties.label, { sticky: true });
+      },
+      minZoom: 8,
+    });
+    if (corineVisible) corineLayer.addTo(map);
+    updateLegend();
+  } catch(e) {
+    console.error('Error cargando CORINE:', e);
+    corineLoaded = false;
+  }
+}
+ 
+function toggleCorine(enabled) {
+  corineVisible = enabled;
+  if (enabled) {
+    loadCorineLayer();  // carga lazy — solo la primera vez
+    if (corineLayer) corineLayer.addTo(map);
+  } else {
+    if (corineLayer) map.removeLayer(corineLayer);
+  }
+  updateLegend();
+}
+ 
+function autoActivateCorine() {
+  const chk = document.getElementById('chk-corine');
+  if (chk && !chk.checked) {
+    chk.checked = true;
+    toggleCorine(true);
+  }
 }
 
 // ── Estado ────────────────────────────────────────────────────────────────
@@ -388,7 +487,7 @@ function renderFires() {
       map.setView([f.latitude, f.longitude], 16);
       highlightCard(f.id);
       autoActivateWMS('effis_fwi');  // peligrosidad meteorológica
-      autoActivateWMS('corine');     // tipo de vegetación
+      autoActivateCorine();    // tipo de vegetación
     });
 
     fireLayers.push(circle);
@@ -487,10 +586,10 @@ function zoomToAlert(id) {
 }
 
 function zoomToFire(lat, lon, id) {
-  map.setView([lat, lon], 16);
+  map.setView([lat, lon], 14);
   highlightCard(id);
   autoActivateWMS('effis_fwi');
-  autoActivateWMS('corine');
+  autoActivateCorine();
 }
 
 // ── Toggles capas ─────────────────────────────────────────────────────────
@@ -516,7 +615,7 @@ document.querySelectorAll('#level-filters .fbtn').forEach(btn => {
     const none  = document.querySelector('.fbtn.none');
     const colors = [...document.querySelectorAll('#level-filters .fbtn')]
       .filter(b => b.dataset.level !== 'all' && b.dataset.level !== 'none');
-
+ 
     if (level === 'all') {
       activeLevels = new Set(['Rojo','Naranja','Amarillo','Verde']);
       colors.forEach(b => b.classList.add('active'));
@@ -536,7 +635,7 @@ document.querySelectorAll('#level-filters .fbtn').forEach(btn => {
     renderAll();
   });
 });
-
+ 
 document.getElementById('event-select').addEventListener('change', e => {
   activeEvent = e.target.value; renderAll();
 });
@@ -557,14 +656,17 @@ function fmtDate(iso) {
 }
 
 // ── Listeners WMS y capas de datos ────────────────────────────────────────
-['flood','effis_fwi','effis_dc','corine'].forEach(key => {
+const chkCorine = document.getElementById('chk-corine');
+if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
+ 
+['flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
   if (el) el.addEventListener('change', e => toggleWMS(key, e.target.checked));
 });
-
+ 
 const chkAlerts = document.getElementById('chk-alerts');
 const chkFires  = document.getElementById('chk-fires');
 if (chkAlerts) chkAlerts.addEventListener('change', e => toggleLayer('alerts', e.target.checked));
 if (chkFires)  chkFires.addEventListener('change',  e => toggleLayer('fires',  e.target.checked));
-
+ 
 init();
