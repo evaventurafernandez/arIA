@@ -1,6 +1,6 @@
-// ── Mapa ──────────────────────────────────────────────────────────────────
+// Mapa base
 const map = L.map('map', { zoomControl: false }).setView([40.4, -3.7], 6);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '© OpenStreetMap © CARTO', maxZoom: 18
 }).addTo(map);
 
@@ -10,19 +10,19 @@ const resetBtn = L.control({ position: 'topright' });
 resetBtn.onAdd = () => {
   const btn = L.DomUtil.create('button', 'leaflet-bar leaflet-control');
   btn.title = 'Ver España completa';
-  btn.innerHTML = '&#9635;';
-  btn.style.cssText = 'width:30px;height:30px;font-size:15px;cursor:pointer;background:#1a1d27;color:#aaa;border:1px solid #2a2d3a;display:flex;align-items:center;justify-content:center;margin-top:4px;';
+  btn.innerHTML = '&#8962;';
+  btn.style.cssText = 'width:30px;height:30px;font-size:20px;cursor:pointer;background:#1a1d27;color:#aaa;border:1px solid #2a2d3a;display:flex;align-items:center;justify-content:center;margin-top:4px;';
   btn.onclick = () => {
     // Resetear vista
     map.setView([40.4, -3.7], 6);
-    // Desactivar todas las capas WMS
+    // Desactivar capas WMS
     Object.keys(wmsActive).forEach(key => {
       map.removeLayer(wmsActive[key]);
       delete wmsActive[key];
       const chk = document.getElementById('chk-' + key);
       if (chk) chk.checked = false;
     });
-    // Resetear CORINE
+    // Desactivar CORINE
     if (corineLayer) { map.removeLayer(corineLayer); }
     corineVisible = false;
     const chkC = document.getElementById('chk-corine');
@@ -48,31 +48,31 @@ const WMS_DEFS = {
   },
   effis_fwi: {
     url:     EFFIS_URL,
-    layer:   'mf010.fwi',        // Fire Weather Index — actualización diaria
+    layer:   'mf010.fwi',        // indeice de propagacion - diaria
     time:    TODAY,
     opacity: 0.65,
   },
   effis_dc: {
     url:     EFFIS_URL,
-    layer:   'mf010.dc',         // Drought Code — actualización diaria
+    layer:   'mf010.dc',         // Indice de sequia - diaria
     time:    TODAY,
     opacity: 0.65,
   },
   flood: {
     url:     'https://servicios.idee.es/wms-inspire/riesgos-naturales/inundaciones',
-    layer:   'NZ.Flood.FluvialT100',  // inundación fluvial T=100 — MITECO/SNCZI
+    layer:   'NZ.Flood.FluvialT100',  // inundación fluvial T=100 - MITECO/SNCZI - capa estatica
     time:    null,
     opacity: 0.6,
     version: '1.3.0',
   },
-  // WMS CORINE completo (44 clases) — desactivado de momento, disponible para uso futuro
+  // WMS CORINE completo (44 clases)
   corine_wms: {
     url:     'https://servicios.idee.es/wms-inspire/ocupacion-suelo',
-    layer:   'LC.LandCoverSurfaces',  // CORINE Land Cover 2018 + SIOSE — IGN
-    time:    null,                    // capa estática, actualización cada 6 años
+    layer:   'LC.LandCoverSurfaces',  // CORINE Land Cover 2018 - IGN
+    time:    null,                    // capa estática, cada 6 años
     opacity: 0.55,
     version: '1.3.0',
-    minZoom: 8,                       // visible a partir de zoom provincial
+    minZoom: 8,                       // visible a partir de zoom 8
   },
 };
 
@@ -115,7 +115,7 @@ function autoActivateWMS(key) {
   }
 }
 
-// ── Leyenda WMS ────────────────────────────────────────────────────────────
+// Leyenda WMS 
 const WMS_LEGENDS = {
   effis_fwi: {
     title: 'Peligro de incendio FWI (EFFIS)',
@@ -166,7 +166,7 @@ const WMS_LEGENDS = {
       { color: '#80d4ff', label: 'Aguas continentales' }, //51
       { color: '#00ccf2', label: 'Aguas marinas' }, //52
     ],
-    note: 'CORINE Land Cover 2018 · IGN/CNIG · nivel 2'
+    note: 'CORINE Land Cover 2018 - IGN/CNIG - nivel 2'
   },
 };
 
@@ -213,24 +213,24 @@ function updateLegend() {
   el.innerHTML = wmsHtml + corineHtml;
 }
  
-// ── CORINE: capa vectorial propia (GeoJSON filtrado desde backend) ────────
+// CORINE (GeoJSON filtrado desde backend) 
 let corineLayer   = null;   // L.geoJSON instance
 let corineLoaded  = false;  // evitar recargar
 let corineVisible = false;
  
 const CORINE_LEGEND = {
-  title: 'Usos del suelo — riesgo de incendio',
+  title: 'Usos del suelo (filtrado)',
   items: [
-    { color: '#267300', label: 'Bosque de coníferas (muy alto riesgo)' },
-    { color: '#4ce600', label: 'Bosque de frondosas (alto riesgo)' },
-    { color: '#70a800', label: 'Bosque mixto (alto riesgo)' },
-    { color: '#a8a800', label: 'Brezales y matorrales (alto riesgo)' },
-    { color: '#d4a46a', label: 'Vegetación esclerófila mediterránea' },
-    { color: '#d4e6a5', label: 'Pastizales naturales (riesgo medio)' },
-    { color: '#ffffa8', label: 'Cultivos en secano (riesgo medio)' },
+    { color: '#267300', label: 'Bosque de coníferas' },
+    { color: '#4ce600', label: 'Bosque de frondosas' },
+    { color: '#70a800', label: 'Bosque mixto' },
+    { color: '#a8a800', label: 'Brezales y matorrales' },
+    { color: '#d4a46a', label: 'Vegetación esclerófila' },
+    { color: '#d4e6a5', label: 'Pastizales naturales' },
+    { color: '#ffffa8', label: 'Cultivos en secano' },
     { color: '#e6e600', label: 'Mosaico de cultivos' },
   ],
-  note: 'CORINE Land Cover 2018 · IGN/CNIG · clases forestales y agrícolas'
+  note: 'CORINE Land Cover 2018 - IGN/CNIG - usos forestales y agrícolas'
 };
  
 async function loadCorineLayer() {
@@ -262,7 +262,7 @@ async function loadCorineLayer() {
 function toggleCorine(enabled) {
   corineVisible = enabled;
   if (enabled) {
-    loadCorineLayer();  // carga lazy — solo la primera vez
+    loadCorineLayer();  // carga solo la primera vez
     if (corineLayer) corineLayer.addTo(map);
   } else {
     if (corineLayer) map.removeLayer(corineLayer);
@@ -278,7 +278,7 @@ function autoActivateCorine() {
   }
 }
 
-// ── Estado ────────────────────────────────────────────────────────────────
+// Estado 
 let alertsData   = [];
 let firesData    = [];
 let alertLayers  = {};
@@ -362,7 +362,7 @@ function resetTimeline() {
 
 function isActive(a) { return new Date(a.onset) <= tlCurrent; }
 
-// ── Carga ─────────────────────────────────────────────────────────────────
+// Carga 
 async function init() {
   const [alerts, fires, stats] = await Promise.all([
     fetch('/api/alerts').then(r => r.json()),
@@ -373,8 +373,8 @@ async function init() {
   firesData  = fires;
 
   document.getElementById('stats-bar').innerHTML =
-    `<b>${stats.alerts.total}</b> avisos AEMET &nbsp;·&nbsp; `+
-    `<b>${stats.fires.total}</b> focos FIRMS &nbsp;·&nbsp; `+
+    `<b>${stats.alerts.total}</b> avisos AEMET &nbsp;-&nbsp; `+
+    `<b>${stats.fires.total}</b> focos FIRMS &nbsp;-&nbsp; `+
     `FRP máx: <b>${stats.fires.frp_max.toFixed(1)} MW</b>`;
 
   populateEventFilter();
@@ -386,7 +386,7 @@ async function init() {
   renderList();
 }
 
-// ── Filtrado ──────────────────────────────────────────────────────────────
+// Filtrado
 function getFilteredAlerts() {
   return alertsData.filter(a => {
     const inTime  = new Date(a.expires) >= tlCurrent;
@@ -420,7 +420,7 @@ function populateEventFilter() {
   });
 }
 
-// ── Render ────────────────────────────────────────────────────────────────
+// Renderizar
 function renderAll() { renderAlerts(); renderList(); }
 
 function renderAlerts() {
@@ -448,6 +448,7 @@ function renderAlerts() {
       { sticky: true }
     );
 
+    // Activacion de capas en click a poligonos
     poly.on('click', () => {
       map.fitBounds(poly.getBounds(), { padding: [40,40] });
       highlightCard(a.id);
@@ -482,7 +483,8 @@ function renderFires() {
       `<span style="color:${f.level_color}">${f.level}</span><br>${f.acq_date} ${hora} UTC`,
       { sticky: true }
     );
-
+    
+    // Activacion de capas en click a puntos
     circle.on('click', () => {
       map.setView([f.latitude, f.longitude], 16);
       highlightCard(f.id);
@@ -496,7 +498,7 @@ function renderFires() {
   if (activeList === 'fires') updateListHeader(firesData);
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────────
+// Sidebar 
 function highlightCard(id) {
   document.querySelectorAll('.card').forEach(c => c.classList.remove('highlighted'));
   const card = document.querySelector(`.card[data-id="${id}"]`);
@@ -570,7 +572,7 @@ function updateListHeader(data) {
   }
 }
 
-// ── Zoom ──────────────────────────────────────────────────────────────────
+// Zoom 
 function zoomToAlert(id) {
   const a = alertsData.find(x => x.id === id);
   if (!a || !a.polygon) return;
@@ -592,7 +594,7 @@ function zoomToFire(lat, lon, id) {
   autoActivateCorine();
 }
 
-// ── Toggles capas ─────────────────────────────────────────────────────────
+// Toggles capas
 function toggleLayer(type, enabled) {
   if (type === 'alerts') {
     showAlerts = enabled; renderAlerts();
@@ -640,7 +642,7 @@ document.getElementById('event-select').addEventListener('change', e => {
   activeEvent = e.target.value; renderAll();
 });
 
-// ── Utilidades ────────────────────────────────────────────────────────────
+// Utilidades
 function parsePolygon(str) {
   return str.trim().split(' ').map(p => {
     const [la,lo] = p.split(',').map(Number);
@@ -655,7 +657,7 @@ function fmtDate(iso) {
          d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
 }
 
-// ── Listeners WMS y capas de datos ────────────────────────────────────────
+// Listeners WMS y capas de datos 
 const chkCorine = document.getElementById('chk-corine');
 if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
  

@@ -18,7 +18,7 @@ from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
 
-# ── Configuración ──────────────────────────────────────────────────────────
+# Claves 
 class Settings(BaseSettings):
     aemet_api_key: str
     firms_map_key: str = ""
@@ -28,11 +28,11 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-# ── Cache en memoria ───────────────────────────────────────────────────────
+# Cache en memoria 
 alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
 
-# ── AEMET: parseo CAP ─────────────────────────────────────────────────────
+# AEMET: parseo CAP 
 NS = "urn:oasis:names:tc:emergency:cap:1.2"
 LEVEL_COLORS   = {"Amarillo": "#FFD700", "Naranja": "#FFA500", "Rojo": "#CC0000", "Verde": "#4CAF50"}
 LEVEL_KEYWORDS = {"rojo": "Rojo", "naranja": "Naranja", "amarillo": "Amarillo", "verde": "Verde"}
@@ -131,7 +131,7 @@ async def fetch_aemet_alerts() -> list[dict]:
     return all_alerts
 
 
-# ── NASA FIRMS ────────────────────────────────────────────────────────────
+# NASA FIRMS 
 SPAIN_BBOX = "-9.5,35.9,4.5,43.8"
 _SPAIN_GEOM = None
 
@@ -213,7 +213,7 @@ async def fetch_firms_fires() -> list[dict]:
     return fires
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────
+# Lifespan 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global alerts_cache, fires_cache
@@ -237,12 +237,12 @@ async def lifespan(app: FastAPI):
     yield
  
 
-# ── App ───────────────────────────────────────────────────────────────────
+# App 
 app = FastAPI(title="MeteoVisor Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────
+# Endpoints
 @app.get("/api/alerts")
 def get_alerts():
     """Avisos meteorológicos activos de AEMET."""
@@ -276,12 +276,7 @@ def get_stats():
  
 @app.get("/api/landcover")
 def get_landcover():
-    """
-    Cobertura forestal filtrada de CORINE Land Cover 2018 (IGN/CNIG).
-    Clases: bosques, matorrales y cultivos con mayor riesgo de incendio.
-    Sirve el fichero pre-procesado data/landcover.geojson directamente.
-    Genera el fichero ejecutando: python generar_landcover.py
-    """
+    """Cobertura forestal filtrada de CORINE Land Cover 2018 (IGN/CNIG)."""
     path = 'data/landcover.geojson'
     if not os.path.exists(path):
         return {"type": "FeatureCollection", "features": [], "error": "Ejecuta generar_landcover.py"}
