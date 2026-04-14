@@ -62,15 +62,17 @@ const WMS_DEFS = {
   },
   effis_fwi: {
     url:     EFFIS_URL,
-    layer:   'mf010.fwi',        // Fire Weather Index: peligro meteorológico de incendio diario
+    layer:   'mf010.fwi',        // Fire Weather Index: peligro meteorológico de incendio - diario
     time:    TODAY,
     opacity: 0.65,
+    clipToSpain: true,
   },
   effis_dc: {
     url:     EFFIS_URL,
-    layer:   'mf010.dc',         // indice de sequia - diaria
+    layer:   'mf010.dc',         // Drought Code: sequía profunda diaria
     time:    TODAY,
     opacity: 0.65,
+    clipToSpain: true,
   },
   flood: {
     url:     'https://servicios.idee.es/wms-inspire/riesgos-naturales/inundaciones',
@@ -98,11 +100,6 @@ let spainBoundaryPromise = null;
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
-
-function isSpainClippedWMS(key) {
-  const d = WMS_DEFS[key];
-  return Boolean(d) && (d.type === undefined || d.type === 'wms') && d.clipToSpain !== false;
-}
 
 function loadSpainBoundary() {
   if (spainBoundaryData) return Promise.resolve(spainBoundaryData);
@@ -153,7 +150,6 @@ function addGeometryToCanvasPath(ctx, geometry, coords, tileSize) {
     if (started) ctx.closePath();
   }
 
-  if (!geometry) return;
   if (geometry.type === 'Polygon') {
     geometry.coordinates.forEach(addRing);
   } else if (geometry.type === 'MultiPolygon') {
@@ -278,7 +274,7 @@ function buildWMS(key) {
   };
   if (d.time) opts.TIME = d.time;
   if (d.minZoom) opts.minZoom = d.minZoom;
-  return isSpainClippedWMS(key)
+  return d.clipToSpain
     ? new SpainClippedWMSLayer(d.url, opts)
     : L.tileLayer.wms(d.url, opts);
 }
@@ -310,14 +306,23 @@ const EFFIS_FIRE_DANGER_FWI_CLASSES = [
   { color: '#3A0015', nameEs: 'Muy extremo',  nameEn: 'Very Extreme', min: 70.0, max: null },
 ];
 
-function formatFwiValue(value) {
+const EFFIS_FIRE_DANGER_DC_CLASSES = [
+  { color: '#9CFFC0', nameEs: 'Bajo',         nameEn: 'Low',          min: null, max: 256.1 },
+  { color: '#CDE24E', nameEs: 'Moderado',     nameEn: 'Moderate',     min: 256.1, max: 334.1 },
+  { color: '#E6AC00', nameEs: 'Alto',         nameEn: 'High',         min: 334.1, max: 450.6 },
+  { color: '#D97010', nameEs: 'Muy alto',     nameEn: 'Very High',    min: 450.6, max: 600.0 },
+  { color: '#AD060E', nameEs: 'Extremo',      nameEn: 'Extreme',      min: 600.0, max: 749.4 },
+  { color: '#3A0015', nameEs: 'Muy extremo',  nameEn: 'Very Extreme', min: 749.4, max: null },
+];
+
+function formatEffisIndexValue(value) {
   return value.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
-function formatFwiRange(fwiClass) {
-  if (fwiClass.min === null) return `FWI < ${formatFwiValue(fwiClass.max)}`;
-  if (fwiClass.max === null) return `FWI > ${formatFwiValue(fwiClass.min)}`;
-  return `FWI ${formatFwiValue(fwiClass.min)} - ${formatFwiValue(fwiClass.max)}`;
+function formatEffisIndexRange(effisClass, indexName) {
+  if (effisClass.min === null) return `${indexName} < ${formatEffisIndexValue(effisClass.max)}`;
+  if (effisClass.max === null) return `${indexName} > ${formatEffisIndexValue(effisClass.min)}`;
+  return `${indexName} ${formatEffisIndexValue(effisClass.min)} - ${formatEffisIndexValue(effisClass.max)}`;
 }
 
 // Leyenda WMS
@@ -335,19 +340,17 @@ const WMS_LEGENDS = {
     title: 'Peligro de incendio FWI (EFFIS)',
     items: EFFIS_FIRE_DANGER_FWI_CLASSES.map(c => ({
       color: c.color,
-      label: `${c.nameEs} (${formatFwiRange(c)})`,
+      label: `${c.nameEs} (${formatEffisIndexRange(c, 'FWI')})`,
     })),
     note: 'Capa WMS mf010.fwi - MeteoFrance ~10 km - clases oficiales EFFIS'
   },
   effis_dc: {
-    title: 'Índice de sequía (DC)',
-    items: [
-      { color: '#800026', label: 'Extremo (>600)' },
-      { color: '#fd8d3c', label: 'Alto (300 – 600)' },
-      { color: '#fed976', label: 'Moderado (100 – 300)' },
-      { color: '#ffffcc', label: 'Bajo (<100)' },
-    ],
-    note: 'Humedad profunda del suelo - actualización diaria'
+    title: 'Código de sequía DC (EFFIS)',
+    items: EFFIS_FIRE_DANGER_DC_CLASSES.map(c => ({
+      color: c.color,
+      label: `${c.nameEs} (${formatEffisIndexRange(c, 'DC')})`,
+    })),
+    note: 'Capa WMS mf010.dc - subcomponente FWI - clases oficiales EFFIS'
   },
   flood: {
     title: 'Zonas inundables fluviales T=100',
