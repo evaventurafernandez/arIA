@@ -1,5 +1,5 @@
 // Mapa base
-const map = L.map('map', { zoomControl: false }).setView([40.4, -3.7], 6);
+const map = L.map('map', { zoomControl: false }).setView([40.0, -3.7], 6);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '© OpenStreetMap © CARTO', maxZoom: 18
 }).addTo(map);
@@ -14,7 +14,7 @@ resetBtn.onAdd = () => {
   btn.style.cssText = 'width:30px;height:30px;font-size:20px;cursor:pointer;background:#1a1d27;color:#aaa;border:1px solid #2a2d3a;display:flex;align-items:center;justify-content:center;margin-top:4px;';
   btn.onclick = () => {
     // Resetear vista
-    map.setView([40.4, -3.7], 6);
+    map.setView([40.0, -3.7], 6);
     // Desactivar capas WMS
     Object.keys(wmsActive).forEach(key => {
       map.removeLayer(wmsActive[key]);
@@ -42,7 +42,7 @@ const YESTERDAY = new Date(Date.now() - 86400000).toISOString().split('T')[0];
 const WMS_DEFS = {
   effis_fires: {
     url:     EFFIS_URL,
-    layer:   'viirs.hs',
+    layer:   'viirs.hs',         // focos calientes (copernicus)
     time:    YESTERDAY,
     opacity: 0.85,
   },
@@ -54,7 +54,7 @@ const WMS_DEFS = {
   },
   effis_dc: {
     url:     EFFIS_URL,
-    layer:   'mf010.dc',         // Indice de sequia - diaria
+    layer:   'mf010.dc',         // indice de sequia - diaria
     time:    TODAY,
     opacity: 0.65,
   },
