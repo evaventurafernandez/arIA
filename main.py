@@ -5,11 +5,12 @@ import json
 import os
 import tarfile
 import xml.etree.ElementTree as ET
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
  
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +23,7 @@ from shapely.ops import unary_union
 class Settings(BaseSettings):
     aemet_api_key: str
     firms_map_key: str = ""
+    firms_include_modis: bool = False
     class Config:
         env_file = ".env"
 
@@ -31,6 +33,11 @@ settings = Settings()
 # Cache en memoria 
 alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
+
+EFFIS_WMTS_BASE = "https://maps.effis.emergency.copernicus.eu/gwist/wmts"
+EFFIS_WMTS_LAYERS = {"viirs.hs.today"}
+EFFIS_LOCAL_FIRES_PATH = "data/copernicus/fires/effis_viirs_hs_today_wfs.geojson"
+SPAIN_BOUNDARY_PATH = "data/boundaries/spain_nuts_2024_01m.geojson"
 
 # AEMET: parseo CAP 
 NS = "urn:oasis:names:tc:emergency:cap:1.2"
@@ -131,86 +138,198 @@ async def fetch_aemet_alerts() -> list[dict]:
     return all_alerts
 
 
-# NASA FIRMS 
-SPAIN_BBOX = "-9.5,35.9,4.5,43.8"
+# NASA FIRMS
+FIRMS_API_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
+FIRMS_DAY_RANGE = 1
+FIRMS_VIIRS_SOURCES = ("VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT", "VIIRS_SNPP_NRT")
+FIRMS_OPTIONAL_SOURCES = ("MODIS_NRT",)
+FIRMS_QUERY_AREAS = (
+    ("peninsula_balears_ceuta_melilla", "-10.0,35.0,4.6,44.2"),
+    ("canarias", "-18.5,27.5,-13.0,29.6"),
+)
+FIRMS_VIIRS_FIELDS = (
+    "latitude",
+    "longitude",
+    "bright_ti4",
+    "scan",
+    "track",
+    "acq_date",
+    "acq_time",
+    "satellite",
+    "confidence",
+    "version",
+    "bright_ti5",
+    "frp",
+    "daynight",
+)
 _SPAIN_GEOM = None
 
 async def load_spain_geometry():
     global _SPAIN_GEOM
-    url = "https://raw.githubusercontent.com/georgique/world-geojson/develop/countries/spain.json"
+    if not os.path.exists(SPAIN_BOUNDARY_PATH):
+        raise FileNotFoundError(
+            f"No se encontró {SPAIN_BOUNDARY_PATH}; es necesario para filtrar FIRMS por España"
+        )
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            geojson = r.json()
+        with open(SPAIN_BOUNDARY_PATH, encoding="utf-8") as f:
+            geojson = json.load(f)
         features = geojson.get("features", [geojson]) if "features" in geojson else [geojson]
         geometries = [shape(f["geometry"]) for f in features if f.get("geometry")]
+        if not geometries:
+            raise ValueError("El GeoJSON de España no contiene geometrías")
         _SPAIN_GEOM = unary_union(geometries)
-        print("  Geometria de Espana cargada correctamente")
+        print("  Geometria de Espana cargada desde GeoJSON local")
     except Exception as e:
-        print(f"  Error cargando geometria: {e} — usando bbox de respaldo")
-        from shapely.geometry import box
-        _SPAIN_GEOM = unary_union([
-            box(-9.3, 36.0, 3.3, 43.8),
-            box(1.1, 38.6, 4.4, 40.1),
-            box(-18.2, 27.6, -13.3, 29.5),
-            box(-5.4, 35.85, -5.2, 35.95),
-            box(-2.97, 35.26, -2.93, 35.30),
-        ])
+        raise RuntimeError(f"Error cargando geometria local de Espana: {e}") from e
 
 def is_in_spain(lat: float, lon: float) -> bool:
     if _SPAIN_GEOM is None:
-        return True
-    return _SPAIN_GEOM.contains(Point(lon, lat))
+        raise RuntimeError("La geometria de Espana no esta cargada")
+    return _SPAIN_GEOM.covers(Point(lon, lat))
 
 def classify_frp(frp: float) -> tuple[str, str]:
     if frp >= 50: return "Rojo",    "#CC0000"
     if frp >= 10: return "Naranja", "#FFA500"
     return              "Amarillo", "#FFD700"
 
-async def fetch_firms_fires() -> list[dict]:
-    if not settings.firms_map_key:
-        return []
-    url = (f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
-           f"{settings.firms_map_key}/VIIRS_SNPP_NRT/{SPAIN_BBOX}/1")
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        text = r.text
+def firms_sources() -> tuple[str, ...]:
+    sources = list(FIRMS_VIIRS_SOURCES)
+    if settings.firms_include_modis:
+        sources.extend(FIRMS_OPTIONAL_SOURCES)
+    return tuple(sources)
 
+def _float_or_none(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def _format_acq_datetime_utc(acq_date: str, acq_time: str) -> str:
+    if not acq_date:
+        return ""
+    time = (acq_time or "").zfill(4)
+    if len(time) != 4 or not time.isdigit():
+        return f"{acq_date}T00:00:00Z"
+    return f"{acq_date}T{time[:2]}:{time[2:]}:00Z"
+
+async def fetch_firms_csv(
+    client: httpx.AsyncClient,
+    source: str,
+    area_coordinates: str,
+) -> str:
+    url = f"{FIRMS_API_BASE}/{settings.firms_map_key}/{source}/{area_coordinates}/{FIRMS_DAY_RANGE}"
+    r = await client.get(url)
+    r.raise_for_status()
+    return r.text
+
+def parse_firms_csv(text: str, source: str, area_name: str) -> tuple[list[dict], int]:
     fires = []
     excluded = 0
-    for row in csv.DictReader(io.StringIO(text)):
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or not {"latitude", "longitude"}.issubset(reader.fieldnames):
+        raise ValueError(f"Respuesta FIRMS inesperada para {source}/{area_name}")
+    for row in reader:
         try:
-            if row.get("confidence", "l").strip().lower() == "l":
+            lat = _float_or_none(row.get("latitude"))
+            lon = _float_or_none(row.get("longitude"))
+            if lat is None or lon is None:
+                excluded += 1
                 continue
-            lat = float(row["latitude"])
-            lon = float(row["longitude"])
             if not is_in_spain(lat, lon):
                 excluded += 1
                 continue
-            frp = float(row.get("frp", 0))
+
+            frp = _float_or_none(row.get("frp")) or 0.0
             level, color = classify_frp(frp)
-            date = row.get("acq_date", "")
-            time = row.get("acq_time", "").zfill(4)
-            fires.append({
-                "id":          f"{lat}_{lon}_{date}_{time}",
-                "latitude":    lat,
-                "longitude":   lon,
-                "frp":         frp,
-                "confidence":  row.get("confidence", "").strip(),
-                "level":       level,
+            acq_date = row.get("acq_date", "")
+            acq_time = row.get("acq_time", "").zfill(4)
+            fire = {field: row.get(field, "") for field in FIRMS_VIIRS_FIELDS}
+            fire.update({
+                "id": (
+                    f"{source}_{lat:.6f}_{lon:.6f}_{acq_date}_{acq_time}_"
+                    f"{row.get('satellite', '')}"
+                ),
+                "latitude": lat,
+                "longitude": lon,
+                "frp": frp,
+                "level": level,
                 "level_color": color,
-                "acq_date":    date,
-                "acq_time":    time,
-                "satellite":   row.get("satellite", ""),
-                "daynight":    row.get("daynight", ""),
-                "source":      "firms",
+                "acq_date": acq_date,
+                "acq_time": acq_time,
+                "acq_datetime_utc": _format_acq_datetime_utc(acq_date, acq_time),
+                "source": "firms",
+                "firms_source": source,
+                "query_area": area_name,
             })
+            fires.append(fire)
         except Exception:
-            pass
+            excluded += 1
+    return fires, excluded
+
+async def fetch_spain_hotspots() -> list[dict]:
+    if not settings.firms_map_key:
+        return []
+    if _SPAIN_GEOM is None:
+        await load_spain_geometry()
+
+    requests = [
+        (source, area_name, area_coordinates)
+        for source in firms_sources()
+        for area_name, area_coordinates in FIRMS_QUERY_AREAS
+    ]
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, trust_env=False) as client:
+        results = await asyncio.gather(
+            *[
+                fetch_firms_csv(client, source, area_coordinates)
+                for source, _, area_coordinates in requests
+            ],
+            return_exceptions=True,
+        )
+
+    fires = []
+    excluded = 0
+    errors = []
+    for (source, area_name, _), result in zip(requests, results):
+        if isinstance(result, Exception):
+            errors.append(f"{source}/{area_name}: {result}")
+            continue
+        try:
+            parsed, parsed_excluded = parse_firms_csv(result, source, area_name)
+        except Exception as exc:
+            errors.append(f"{source}/{area_name}: {exc}")
+            continue
+        fires.extend(parsed)
+        excluded += parsed_excluded
+
+    if errors and not fires:
+        raise RuntimeError("; ".join(errors))
+    if errors:
+        print("  FIRMS: avisos parciales:", "; ".join(errors))
+
+    unique = {}
+    for fire in fires:
+        key = (
+            fire.get("firms_source"),
+            fire.get("latitude"),
+            fire.get("longitude"),
+            fire.get("acq_date"),
+            fire.get("acq_time"),
+            fire.get("satellite"),
+        )
+        unique.setdefault(key, fire)
+
+    fires = sorted(
+        unique.values(),
+        key=lambda f: (f.get("acq_datetime_utc") or "", float(f.get("frp") or 0)),
+        reverse=True,
+    )
     print(f"  FIRMS: {len(fires)} focos en Espana, {excluded} excluidos")
     return fires
+
+fetch_firms_fires = fetch_spain_hotspots
 
 
 # Lifespan 
@@ -231,9 +350,8 @@ async def lifespan(app: FastAPI):
     print("Cargando datos de AEMET...")
     alerts_cache = await fetch_aemet_alerts()
     print(f"  → {len(alerts_cache)} avisos cargados")
-    print("Cargando datos de NASA FIRMS...")
-    fires_cache = await fetch_firms_fires()
-    print(f"  → {len(fires_cache)} focos cargados")
+    fires_cache = []
+    print("NASA FIRMS se consultara en vivo al cargar el visor")
     yield
  
 
@@ -249,8 +367,14 @@ def get_alerts():
     return alerts_cache
  
 @app.get("/api/fires")
-def get_fires():
-    """Focos de incendio activos de NASA FIRMS."""
+async def get_fires(response: Response):
+    """Focos de incendio activos de NASA FIRMS, solicitados en vivo al cargar el visor."""
+    global fires_cache
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        fires_cache = await fetch_spain_hotspots()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Error consultando NASA FIRMS: {exc}") from exc
     return fires_cache
  
 @app.get("/api/stats")
@@ -281,7 +405,62 @@ def get_landcover():
     if not os.path.exists(path):
         return {"type": "FeatureCollection", "features": [], "error": "Ejecuta generar_landcover.py"}
     return FileResponse(path, media_type='application/geo+json')
- 
- 
+
+@app.get("/api/boundaries/spain")
+def get_spain_boundary():
+    """Límite territorial de España usado para recortar y filtrar capas."""
+    if not os.path.exists(SPAIN_BOUNDARY_PATH):
+        raise HTTPException(status_code=404, detail="No se encontró el límite de España")
+    return FileResponse(SPAIN_BOUNDARY_PATH, media_type='application/geo+json')
+
+@app.get("/api/effis/wmts")
+@app.get("/api/effis/wmts/")
+def get_effis_wmts_layer():
+    """Capa local GeoJSON de focos EFFIS/Copernicus generada desde WMTS."""
+    if not os.path.exists(EFFIS_LOCAL_FIRES_PATH):
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "error": "Ejecuta generar_effis_wfs.py para crear la capa EFFIS local",
+        }
+    return FileResponse(EFFIS_LOCAL_FIRES_PATH, media_type='application/geo+json')
+
+@app.get("/api/effis/wmts/{layer}/{z:int}/{y:int}/{x:int}.png")
+async def get_effis_wmts_tile(layer: str, z: int, y: int, x: int):
+    """Proxy local para teselas WMTS de EFFIS que fallan en algunos navegadores con HTTP/2."""
+    if layer not in EFFIS_WMTS_LAYERS:
+        raise HTTPException(status_code=404, detail="Capa EFFIS no permitida")
+    if z < 0 or y < 0 or x < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no válidas")
+
+    params = {
+        "Service": "WMTS",
+        "Request": "GetTile",
+        "Version": "1.0.0",
+        "Layer": layer,
+        "Style": "default",
+        "Format": "image/png; mode=8bit",
+        "TileMatrixSet": "EPSG3857",
+        "TileMatrix": z,
+        "TileRow": y,
+        "TileCol": x,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, trust_env=False) as client:
+            r = await client.get(
+                EFFIS_WMTS_BASE,
+                params=params,
+                headers={"Accept": "image/png,*/*", "User-Agent": "Mozilla/5.0"},
+            )
+            r.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail="Error consultando EFFIS") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="No se pudo consultar EFFIS") from exc
+
+    return Response(
+        content=r.content,
+        media_type=r.headers.get("content-type", "image/png"),
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
- 

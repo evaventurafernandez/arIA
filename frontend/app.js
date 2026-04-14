@@ -27,6 +27,18 @@ resetBtn.onAdd = () => {
     corineVisible = false;
     const chkC = document.getElementById('chk-corine');
     if (chkC) chkC.checked = false;
+    // Mantener las capas esenciales activas en la vista inicial.
+    showAlerts = true;
+    showFires = true;
+    activeList = 'alerts';
+    const chkAlerts = document.getElementById('chk-alerts');
+    const chkFires = document.getElementById('chk-fires');
+    if (chkAlerts) chkAlerts.checked = true;
+    if (chkFires) chkFires.checked = true;
+    if (tlMin) resetTimeline();
+    renderAlerts();
+    renderFires();
+    renderList();
     updateLegend();
   };
   L.DomEvent.disableClickPropagation(btn);
@@ -36,19 +48,21 @@ resetBtn.addTo(map);
 
 // ── WMS ────────────────────────────────────────────────────────────────────
 const EFFIS_URL = 'https://maps.effis.emergency.copernicus.eu/effis';
+const EFFIS_FIRES_URL = '/api/effis/wmts';
+const SPAIN_BOUNDARY_URL = '/api/boundaries/spain';
 const TODAY     = new Date().toISOString().split('T')[0];
-const YESTERDAY = new Date(Date.now() - 86400000).toISOString().split('T')[0];
 
 const WMS_DEFS = {
   effis_fires: {
-    url:     EFFIS_URL,
-    layer:   'viirs.hs',         // focos calientes (copernicus)
-    time:    YESTERDAY,
+    url:     EFFIS_FIRES_URL,
+    type:    'geojson',
+    layer:   'effis_viirs_hs_today_wfs', // focos calientes EFFIS/Copernicus vectorizados
+    time:    null,
     opacity: 0.85,
   },
   effis_fwi: {
     url:     EFFIS_URL,
-    layer:   'mf010.fwi',        // indeice de propagacion - diaria
+    layer:   'mf010.fwi',        // Fire Weather Index: peligro meteorológico de incendio diario
     time:    TODAY,
     opacity: 0.65,
   },
@@ -78,9 +92,178 @@ const WMS_DEFS = {
 
 const wmsActive = {};
 const SPAIN_BOUNDS = L.latLngBounds([27.5, -18.5], [43.9, 4.5]);
+const WMS_LAYER_PANE = 'wmsLayerPane';
+let spainBoundaryData = null;
+let spainBoundaryPromise = null;
+
+map.createPane(WMS_LAYER_PANE);
+map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
+
+function isSpainClippedWMS(key) {
+  const d = WMS_DEFS[key];
+  return Boolean(d) && (d.type === undefined || d.type === 'wms') && d.clipToSpain !== false;
+}
+
+function loadSpainBoundary() {
+  if (spainBoundaryData) return Promise.resolve(spainBoundaryData);
+  if (!spainBoundaryPromise) {
+    spainBoundaryPromise = fetch(SPAIN_BOUNDARY_URL, { cache: 'force-cache' })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(data => {
+        spainBoundaryData = data;
+        return data;
+      })
+      .catch(e => {
+        spainBoundaryPromise = null;
+        throw e;
+      });
+  }
+  return spainBoundaryPromise;
+}
+
+function forEachSpainBoundaryGeometry(boundaryData, callback) {
+  const features = boundaryData.type === 'FeatureCollection'
+    ? boundaryData.features
+    : [boundaryData];
+
+  features.forEach(feature => {
+    const geometry = feature.type === 'Feature' ? feature.geometry : feature;
+    if (geometry) callback(geometry);
+  });
+}
+
+function addGeometryToCanvasPath(ctx, geometry, coords, tileSize) {
+  const tileOrigin = coords.scaleBy(tileSize);
+
+  function addRing(ring) {
+    let started = false;
+    ring.forEach(([lon, lat]) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const p = map.project([lat, lon], coords.z).subtract(tileOrigin);
+      if (!started) {
+        ctx.moveTo(p.x, p.y);
+        started = true;
+      } else {
+        ctx.lineTo(p.x, p.y);
+      }
+    });
+    if (started) ctx.closePath();
+  }
+
+  if (!geometry) return;
+  if (geometry.type === 'Polygon') {
+    geometry.coordinates.forEach(addRing);
+  } else if (geometry.type === 'MultiPolygon') {
+    geometry.coordinates.forEach(polygon => {
+      polygon.forEach(addRing);
+    });
+  }
+}
+
+function clipCanvasToSpain(ctx, coords, tileSize, boundaryData) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.beginPath();
+  forEachSpainBoundaryGeometry(boundaryData, geometry => {
+    addGeometryToCanvasPath(ctx, geometry, coords, tileSize);
+  });
+  ctx.fill('evenodd');
+  ctx.restore();
+}
+
+const SpainClippedWMSLayer = L.TileLayer.WMS.extend({
+  createTile(coords, done) {
+    const tile = L.DomUtil.create('canvas', 'leaflet-tile');
+    const size = this.getTileSize();
+    tile.width = size.x;
+    tile.height = size.y;
+
+    const ctx = tile.getContext('2d');
+    const img = new Image();
+    img.alt = '';
+    img.onload = () => {
+      loadSpainBoundary()
+        .then(boundaryData => {
+          ctx.drawImage(img, 0, 0, size.x, size.y);
+          clipCanvasToSpain(ctx, coords, size, boundaryData);
+          done(null, tile);
+        })
+        .catch(e => {
+          console.error('Error recortando la tesela WMS al límite de España:', e);
+          ctx.drawImage(img, 0, 0, size.x, size.y);
+          done(null, tile);
+        });
+    };
+    img.onerror = () => done(new Error('No se pudo cargar la tesela WMS'), tile);
+    img.src = this.getTileUrl(coords);
+
+    return tile;
+  },
+});
+
+function buildEffisFiresGeoJSON(d) {
+  const layer = L.geoJSON(null, {
+    pointToLayer: (feature, latlng) => {
+      const p = feature.properties || {};
+      const color = p.avg_color || '#ff0000';
+      const radius = Math.max(4, Math.min(10, Math.sqrt(Number(p.pixel_count) || 16) / 2));
+      return L.circleMarker(latlng, {
+        radius,
+        color: '#7f0000',
+        fillColor: color,
+        fillOpacity: d.opacity,
+        weight: 1,
+      });
+    },
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties || {};
+      const coords = feature.geometry?.coordinates || [];
+      const lon = Number(coords[0]);
+      const lat = Number(coords[1]);
+      const location = Number.isFinite(lat) && Number.isFinite(lon)
+        ? `${lat.toFixed(4)}, ${lon.toFixed(4)}`
+        : 'Coordenadas no disponibles';
+      layer.bindTooltip(
+        `<b>Foco EFFIS/Copernicus</b><br>${location}<br>` +
+        `Píxeles detectados: ${p.pixel_count ?? 'n/d'}<br>` +
+        `Color medio: ${p.avg_color || 'n/d'}`,
+        { sticky: true }
+      );
+    },
+  });
+
+  fetch(d.url)
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => layer.addData(data))
+    .catch(e => console.error('Error cargando EFFIS GeoJSON:', e));
+
+  return layer;
+}
 
 function buildWMS(key) {
   const d = WMS_DEFS[key];
+  if (d.type === 'geojson') {
+    return buildEffisFiresGeoJSON(d);
+  }
+  if (d.type === 'wmts') {
+    const url =
+      `${d.url}/${d.layer}/{z}/{y}/{x}.png`;
+
+    return L.tileLayer(url, {
+      opacity: d.opacity,
+      bounds: SPAIN_BOUNDS,
+      pane: WMS_LAYER_PANE,
+      minZoom: d.minZoom,
+      maxZoom: d.maxZoom || 18,
+    });
+  }
+
   const ver = d.version || '1.1.1';
   const opts = {
     layers:      d.layer,
@@ -91,10 +274,13 @@ function buildWMS(key) {
     opacity:     d.opacity,
     uppercase:   true,
     bounds:      SPAIN_BOUNDS,
+    pane:        WMS_LAYER_PANE,
   };
   if (d.time) opts.TIME = d.time;
   if (d.minZoom) opts.minZoom = d.minZoom;
-  return L.tileLayer.wms(d.url, opts);
+  return isSpainClippedWMS(key)
+    ? new SpainClippedWMSLayer(d.url, opts)
+    : L.tileLayer.wms(d.url, opts);
 }
 
 function toggleWMS(key, enabled) {
@@ -115,20 +301,43 @@ function autoActivateWMS(key) {
   }
 }
 
-// Leyenda WMS 
+const EFFIS_FIRE_DANGER_FWI_CLASSES = [
+  { color: '#9CFFC0', nameEs: 'Bajo',         nameEn: 'Low',          min: null, max: 11.2 },
+  { color: '#CDE24E', nameEs: 'Moderado',     nameEn: 'Moderate',     min: 11.2, max: 21.3 },
+  { color: '#E6AC00', nameEs: 'Alto',         nameEn: 'High',         min: 21.3, max: 38.0 },
+  { color: '#D97010', nameEs: 'Muy alto',     nameEn: 'Very High',    min: 38.0, max: 50.0 },
+  { color: '#AD060E', nameEs: 'Extremo',      nameEn: 'Extreme',      min: 50.0, max: 70.0 },
+  { color: '#3A0015', nameEs: 'Muy extremo',  nameEn: 'Very Extreme', min: 70.0, max: null },
+];
+
+function formatFwiValue(value) {
+  return value.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+function formatFwiRange(fwiClass) {
+  if (fwiClass.min === null) return `FWI < ${formatFwiValue(fwiClass.max)}`;
+  if (fwiClass.max === null) return `FWI > ${formatFwiValue(fwiClass.min)}`;
+  return `FWI ${formatFwiValue(fwiClass.min)} - ${formatFwiValue(fwiClass.max)}`;
+}
+
+// Leyenda WMS
 const WMS_LEGENDS = {
+  effis_fires: {
+    title: 'Focos activos VIIRS (EFFIS)',
+    items: [
+      { color: '#ff66cc', label: 'Menos de 6 h' },
+      { color: '#ff9999', label: '6 a 12 h' },
+      { color: '#ff0000', label: '12 a 24 h' },
+    ],
+    note: 'Copernicus EFFIS - últimos 1 día'
+  },
   effis_fwi: {
     title: 'Peligro de incendio FWI (EFFIS)',
-    items: [
-      { color: '#3f003f', label: 'Muy extremo  (> 70)' },
-      { color: '#7f0000', label: 'Extremo  (50 – 70)' },
-      { color: '#c00000', label: 'Muy alto  (38.0 – 50.0)' },
-      { color: '#ff0000', label: 'Alto  (21.3 – 38.0)' },
-      { color: '#ffc000', label: 'Moderado  (11.2 – 21.3)' },
-      { color: '#ffff00', label: 'Bajo  (5.2 – 11.2)' },
-      { color: '#00c800', label: 'Muy bajo  (< 5.2)' },
-    ],
-    note: 'Modelo ECMWF - previsión diaria hasta 9 días'
+    items: EFFIS_FIRE_DANGER_FWI_CLASSES.map(c => ({
+      color: c.color,
+      label: `${c.nameEs} (${formatFwiRange(c)})`,
+    })),
+    note: 'Capa WMS mf010.fwi - MeteoFrance ~10 km - clases oficiales EFFIS'
   },
   effis_dc: {
     title: 'Índice de sequía (DC)',
@@ -288,6 +497,7 @@ let showFires    = true;
 let activeList   = 'alerts';
 let activeLevels = new Set(['Rojo','Naranja','Amarillo','Verde']);
 let activeEvent  = 'all';
+let firesError   = null;
 
 // ── Timeline ──────────────────────────────────────────────────────────────
 let tlMin = null, tlMax = null, tlCurrent = null, playInterval = null;
@@ -363,19 +573,66 @@ function resetTimeline() {
 function isActive(a) { return new Date(a.onset) <= tlCurrent; }
 
 // Carga 
-async function init() {
-  const [alerts, fires, stats] = await Promise.all([
-    fetch('/api/alerts').then(r => r.json()),
-    fetch('/api/fires').then(r => r.json()),
-    fetch('/api/stats').then(r => r.json()),
-  ]);
-  alertsData = alerts;
-  firesData  = fires;
+async function fetchJson(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) {
+    let message = `HTTP ${r.status}`;
+    try {
+      const data = await r.json();
+      if (data.detail) message = data.detail;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  return r.json();
+}
 
+function fetchSpainHotspots() {
+  return fetchJson('/api/fires');
+}
+
+function buildClientStats(alerts, fires) {
+  const levelCount = {};
+  const fireLevelCount = {};
+  alerts.forEach(a => {
+    levelCount[a.level] = (levelCount[a.level] || 0) + 1;
+  });
+  fires.forEach(f => {
+    fireLevelCount[f.level] = (fireLevelCount[f.level] || 0) + 1;
+  });
+  return {
+    alerts: { total: alerts.length, por_nivel: levelCount },
+    fires: {
+      total: fires.length,
+      por_nivel: fireLevelCount,
+      frp_max: Math.max(0, ...fires.map(f => Number(f.frp) || 0)),
+    },
+  };
+}
+
+function updateStatsBar(stats) {
+  const fireNote = firesError
+    ? ` &nbsp;-&nbsp; <span style="color:#ff7676">FIRMS: ${firesError}</span>`
+    : '';
   document.getElementById('stats-bar').innerHTML =
     `<b>${stats.alerts.total}</b> avisos AEMET &nbsp;-&nbsp; `+
     `<b>${stats.fires.total}</b> focos FIRMS &nbsp;-&nbsp; `+
-    `FRP máx: <b>${stats.fires.frp_max.toFixed(1)} MW</b>`;
+    `FRP máx: <b>${stats.fires.frp_max.toFixed(1)} MW</b>`+
+    fireNote;
+}
+
+async function init() {
+  document.getElementById('stats-bar').textContent = 'Cargando datos...';
+  document.getElementById('main-list').innerHTML = '<div class="empty">Cargando...</div>';
+  const [alertsResult, firesResult] = await Promise.allSettled([
+    fetchJson('/api/alerts'),
+    fetchSpainHotspots(),
+  ]);
+
+  alertsData = alertsResult.status === 'fulfilled' ? alertsResult.value : [];
+  firesError = firesResult.status === 'rejected' ? firesResult.reason.message : null;
+  firesData  = firesResult.status === 'fulfilled' ? firesResult.value : [];
+  const stats = buildClientStats(alertsData, firesData);
+  updateStatsBar(stats);
 
   populateEventFilter();
   initTimeline();
@@ -465,19 +722,42 @@ function renderAlerts() {
   if (activeList === 'alerts') updateListHeader(filtered);
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatFireTime(f) {
+  if (!f.acq_time) return '';
+  const time = String(f.acq_time).padStart(4, '0');
+  return time.replace(/(\d{2})(\d{2})/, '$1:$2');
+}
+
 function renderFires() {
   fireLayers.forEach(l => map.removeLayer(l));
   fireLayers = [];
   if (!showFires) return;
+  if (firesError) {
+    if (activeList === 'fires') updateListHeader([]);
+    return;
+  }
 
   firesData.forEach(f => {
+    const lat = Number(f.latitude);
+    const lon = Number(f.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const radius = f.level === 'Rojo' ? 10 : f.level === 'Naranja' ? 7 : 5;
-    const circle = L.circleMarker([f.latitude, f.longitude], {
+    const circle = L.circleMarker([lat, lon], {
       radius, color: f.level_color, fillColor: f.level_color,
       fillOpacity: 0.85, weight: 1.5,
     }).addTo(map);
+    circle.fireId = f.id;
 
-    const hora = f.acq_time.padStart(4,'0').replace(/(\d{2})(\d{2})/, '$1:$2');
+    const hora = formatFireTime(f);
     circle.bindTooltip(
       `<b>Foco de incendio</b><br>FRP: ${f.frp} MW · `+
       `<span style="color:${f.level_color}">${f.level}</span><br>${f.acq_date} ${hora} UTC`,
@@ -486,9 +766,9 @@ function renderFires() {
     
     // Activacion de capas en click a puntos
     circle.on('click', () => {
-      map.setView([f.latitude, f.longitude], 16);
+      map.setView([lat, lon], 16);
       highlightCard(f.id);
-      autoActivateWMS('effis_fwi');  // peligrosidad meteorológica
+      autoActivateWMS('effis_fwi');  // peligro meteorológico de incendio FWI
       autoActivateCorine();    // tipo de vegetación
     });
 
@@ -543,14 +823,23 @@ function renderList() {
   } else {
     title.textContent = 'Focos de incendio';
     updateListHeader(firesData);
+    if (firesError) {
+      el.innerHTML = `<div class="empty">No se pudieron cargar los focos FIRMS: ${escapeHtml(firesError)}</div>`;
+      return;
+    }
     if (!firesData.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
 
-    const sorted = [...firesData].sort((a,b) => b.frp - a.frp);
+    const sorted = firesData
+      .filter(f => Number.isFinite(Number(f.latitude)) && Number.isFinite(Number(f.longitude)))
+      .sort((a,b) => b.frp - a.frp);
+    if (!sorted.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
     el.innerHTML = sorted.map(f => {
-      const hora = f.acq_time.padStart(4,'0').replace(/(\d{2})(\d{2})/, '$1:$2');
+      const hora = formatFireTime(f);
+      const lat = Number(f.latitude);
+      const lon = Number(f.longitude);
       return `<div class="card" data-id="${f.id}"
-        style="border-left-color:${f.level_color}" onclick="zoomToFire(${f.latitude},${f.longitude},'${f.id}')">
-        <div class="name">${f.latitude.toFixed(3)}, ${f.longitude.toFixed(3)}</div>
+        style="border-left-color:${f.level_color}" onclick="zoomToFire(${lat},${lon},'${f.id}')">
+        <div class="name">${lat.toFixed(3)}, ${lon.toFixed(3)}</div>
         <div class="area">${f.acq_date} ${hora} UTC · ${f.satellite}</div>
         <div class="meta">
           <span class="badge" style="background:${f.level_color}22;color:${f.level_color}">${f.level}</span>
@@ -661,7 +950,7 @@ function fmtDate(iso) {
 const chkCorine = document.getElementById('chk-corine');
 if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
  
-['flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
+['effis_fires','flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
   if (el) el.addEventListener('change', e => toggleWMS(key, e.target.checked));
 });
