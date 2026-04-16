@@ -6,9 +6,10 @@ import os
 import tarfile
 import xml.etree.ElementTree as ET
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import datetime
+from contextlib import asynccontextmanager, redirect_stdout
+from datetime import datetime, timezone
  
+import generar_effis_wfs
 import httpx
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     aemet_api_key: str
     firms_map_key: str = ""
     firms_include_modis: bool = False
+    effis_auto_refresh: bool = True
+    effis_refresh_timeout: float = 30.0
+    effis_refresh_retries: int = 3
     class Config:
         env_file = ".env"
 
@@ -35,9 +39,54 @@ alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
 
 EFFIS_WMTS_BASE = "https://maps.effis.emergency.copernicus.eu/gwist/wmts"
+EFFIS_WMS_BASE = "https://maps.effis.emergency.copernicus.eu/effis"
 EFFIS_WMTS_LAYERS = {"viirs.hs.today"}
 EFFIS_LOCAL_FIRES_PATH = "data/copernicus/fires/effis_viirs_hs_today_wfs.geojson"
 SPAIN_BOUNDARY_PATH = "data/boundaries/spain_nuts_2024_01m.geojson"
+
+TRACEABLE_LAYERS = {
+    "effis_fires": {
+        "name": "Focos incendio Copernicus (EFFIS)",
+        "service": "GeoJSON local",
+        "layer": "effis_viirs_hs_today_wfs",
+        "status_label": "cargada",
+    },
+    "effis_fwi": {
+        "name": "Peligro de incendio FWI (EFFIS)",
+        "service": "WMS",
+        "url": EFFIS_WMS_BASE,
+        "layer": "mf010.fwi",
+        "time_policy": "today",
+    },
+    "effis_dc": {
+        "name": "Índice sequía DC (EFFIS)",
+        "service": "WMS",
+        "url": EFFIS_WMS_BASE,
+        "layer": "mf010.dc",
+        "time_policy": "today",
+    },
+    "flood": {
+        "name": "Zonas inundables fluviales T=10",
+        "service": "WMS",
+        "url": "https://servicios.idee.es/wms-inspire/riesgos-naturales/inundaciones",
+        "layer": "NZ.Flood.FluvialT10",
+        "status_label": "cargada",
+    },
+    "corine_wms": {
+        "name": "Usos del suelo completo WMS (IGN)",
+        "service": "WMS",
+        "url": "https://servicios.idee.es/wms-inspire/ocupacion-suelo",
+        "layer": "LC.LandCoverSurfaces",
+        "status_label": "cargada",
+    },
+    "corine": {
+        "name": "Usos del suelo CORINE filtrado",
+        "service": "GeoJSON local",
+        "layer": "data/landcover.geojson",
+        "status_label": "cargada",
+    },
+}
+
 
 # AEMET: parseo CAP 
 NS = "urn:oasis:names:tc:emergency:cap:1.2"
@@ -147,6 +196,12 @@ FIRMS_QUERY_AREAS = (
     ("peninsula_balears_ceuta_melilla", "-10.0,35.0,4.6,44.2"),
     ("canarias", "-18.5,27.5,-13.0,29.6"),
 )
+FIRMS_ALLOWED_CONFIDENCE = {"n", "h"}
+FIRMS_CONFIDENCE_LABELS = {
+    "l": "baja",
+    "n": "nominal",
+    "h": "alta",
+}
 FIRMS_VIIRS_FIELDS = (
     "latitude",
     "longitude",
@@ -189,9 +244,25 @@ def is_in_spain(lat: float, lon: float) -> bool:
     return _SPAIN_GEOM.covers(Point(lon, lat))
 
 def classify_frp(frp: float) -> tuple[str, str]:
-    if frp >= 50: return "Rojo",    "#CC0000"
-    if frp >= 10: return "Naranja", "#FFA500"
-    return              "Amarillo", "#FFD700"
+    if frp > 75: return "Muy alta", "#8E1B1B"
+    if frp > 20: return "Alta",     "#E94F37"
+    if frp > 5:  return "Moderada", "#F8961E"
+    return             "Débil",     "#FFD166"
+
+def normalize_firms_confidence(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    aliases = {
+        "low": "l",
+        "l": "l",
+        "nominal": "n",
+        "n": "n",
+        "high": "h",
+        "h": "h",
+    }
+    return aliases.get(raw, raw)
+
+def firms_confidence_label(code: str) -> str:
+    return FIRMS_CONFIDENCE_LABELS.get(code, code or "no indicada")
 
 def firms_sources() -> tuple[str, ...]:
     sources = list(FIRMS_VIIRS_SOURCES)
@@ -206,6 +277,126 @@ def _float_or_none(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+def current_local_date_iso() -> str:
+    return datetime.now().astimezone().date().isoformat()
+
+def file_size_mb(path: str) -> float:
+    return os.path.getsize(path) / 1024 / 1024
+
+def format_utc_timestamp(value: str | None) -> str:
+    if not value:
+        return "fecha no indicada"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        return value
+
+def read_effis_local_metadata() -> tuple[dict, int] | None:
+    if not os.path.exists(EFFIS_LOCAL_FIRES_PATH):
+        return None
+    with open(EFFIS_LOCAL_FIRES_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("metadata", {}), len(data.get("features", []))
+
+def effis_generated_local_date(metadata: dict) -> str | None:
+    value = metadata.get("generated_at_utc")
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().date().isoformat()
+
+async def refresh_effis_local_layer_if_needed() -> None:
+    if not settings.effis_auto_refresh:
+        print("  EFFIS/Copernicus autoactualización desactivada")
+        return
+
+    effis_metadata = read_effis_local_metadata()
+    metadata = effis_metadata[0] if effis_metadata else {}
+    generated_date = effis_generated_local_date(metadata)
+    today = current_local_date_iso()
+    if generated_date == today:
+        print("  EFFIS/Copernicus local actualizado hoy; no se regenera")
+        return
+
+    if generated_date:
+        generated_at = format_utc_timestamp(metadata.get("generated_at_utc"))
+        print(f"  EFFIS/Copernicus local desactualizado ({generated_at}); actualizando...")
+    else:
+        print("  EFFIS/Copernicus local no encontrado; generando capa de hoy...")
+
+    args = generar_effis_wfs.parse_args([
+        "--source", "effis",
+        "--timeout", str(settings.effis_refresh_timeout),
+        "--retries", str(settings.effis_refresh_retries),
+    ])
+
+    try:
+        with redirect_stdout(io.StringIO()):
+            result = await generar_effis_wfs.async_main(args)
+    except Exception as exc:
+        print(f"  AVISO: no se pudo actualizar EFFIS/Copernicus: {exc}")
+        return
+
+    if result != 0:
+        print(f"  AVISO: no se pudo actualizar EFFIS/Copernicus (código {result})")
+        return
+    print("  EFFIS/Copernicus actualizado")
+
+def trace_layer_message(key: str, requested_time: str | None = None) -> str:
+    layer = TRACEABLE_LAYERS.get(key)
+    if not layer:
+        return f"  Capa desconocida: {key}"
+
+    name = layer["name"]
+    if layer.get("time_policy") == "today":
+        time_value = requested_time or current_local_date_iso()
+        return f"  {name}: TIME={time_value}"
+    if layer.get("status_label"):
+        return f"  {name}: {layer['status_label']}"
+    return f"  {name}: cargada"
+
+def log_static_layers() -> None:
+    print("Cargando capas locales...")
+    landcover_path = "data/landcover.geojson"
+    if not os.path.exists(landcover_path):
+        print("  AVISO: data/landcover.geojson no encontrado.")
+        print("  Ejecuta primero: python generar_landcover.py")
+    else:
+        print(f"  CORINE landcover.geojson listo ({file_size_mb(landcover_path):.1f} MB)")
+
+    effis_metadata = read_effis_local_metadata()
+    if effis_metadata is None:
+        print("  AVISO: capa local EFFIS/Copernicus no encontrada.")
+        print("  Ejecuta primero: python generar_effis_wfs.py")
+    else:
+        metadata, feature_count = effis_metadata
+        generated_at = format_utc_timestamp(metadata.get("generated_at_utc"))
+        source_layer = metadata.get("layer", "viirs.hs.today")
+        tiles_ok = metadata.get("tiles_ok", "n/d")
+        tiles_total = metadata.get("tiles_total", "n/d")
+        print(
+            f"  EFFIS/Copernicus local listo "
+            f"({file_size_mb(EFFIS_LOCAL_FIRES_PATH):.1f} MB)"
+        )
+        print(f"    Capa origen: {source_layer}; generado: {generated_at}")
+        print(f"    Features: {feature_count}; teselas correctas: {tiles_ok}/{tiles_total}")
+
+def log_wms_catalog() -> None:
+    print("Cargando catálogo de capas WMS...")
+    for key in ("effis_fwi", "effis_dc", "flood", "corine_wms"):
+        print(trace_layer_message(key))
+
+def log_main_layers(alert_count: int) -> None:
+    print("Cargando capas principales...")
+    print(f"  Avisos AEMET: {alert_count} avisos cargados")
+    print("  Focos NASA FIRMS: en vivo al cargar el visor")
 
 def _format_acq_datetime_utc(acq_date: str, acq_time: str) -> str:
     if not acq_date:
@@ -242,6 +433,11 @@ def parse_firms_csv(text: str, source: str, area_name: str) -> tuple[list[dict],
                 excluded += 1
                 continue
 
+            confidence_code = normalize_firms_confidence(row.get("confidence"))
+            if confidence_code not in FIRMS_ALLOWED_CONFIDENCE:
+                excluded += 1
+                continue
+
             frp = _float_or_none(row.get("frp")) or 0.0
             level, color = classify_frp(frp)
             acq_date = row.get("acq_date", "")
@@ -257,6 +453,10 @@ def parse_firms_csv(text: str, source: str, area_name: str) -> tuple[list[dict],
                 "frp": frp,
                 "level": level,
                 "level_color": color,
+                "intensity_label": level,
+                "intensity_color": color,
+                "confidence_code": confidence_code,
+                "confidence_label": firms_confidence_label(confidence_code),
                 "acq_date": acq_date,
                 "acq_time": acq_time,
                 "acq_datetime_utc": _format_acq_datetime_utc(acq_date, acq_time),
@@ -338,20 +538,14 @@ async def lifespan(app: FastAPI):
     global alerts_cache, fires_cache
     print("Cargando geometria de Espana...")
     await load_spain_geometry()
+
+    await refresh_effis_local_layer_if_needed()
+    log_static_layers()
+    log_wms_catalog()
  
-    # Verificar que el GeoJSON de landcover existe
-    if not os.path.exists('data/landcover.geojson'):
-        print("  AVISO: data/landcover.geojson no encontrado.")
-        print("  Ejecuta primero: python generar_landcover.py")
-    else:
-        size_mb = os.path.getsize('data/landcover.geojson') / 1024 / 1024
-        print(f"  CORINE landcover.geojson listo ({size_mb:.1f} MB)")
- 
-    print("Cargando datos de AEMET...")
     alerts_cache = await fetch_aemet_alerts()
-    print(f"  → {len(alerts_cache)} avisos cargados")
     fires_cache = []
-    print("NASA FIRMS se consultara en vivo al cargar el visor")
+    log_main_layers(len(alerts_cache))
     yield
  
 
@@ -381,11 +575,12 @@ async def get_fires(response: Response):
 def get_stats():
     """Estadísticas básicas de los datos cargados."""
     level_count      = {}
-    fire_level_count = {}
+    fire_intensity_count = {}
     for a in alerts_cache:
         level_count[a["level"]] = level_count.get(a["level"], 0) + 1
     for f in fires_cache:
-        fire_level_count[f["level"]] = fire_level_count.get(f["level"], 0) + 1
+        intensity = f.get("intensity_label") or f.get("level") or "Sin clasificar"
+        fire_intensity_count[intensity] = fire_intensity_count.get(intensity, 0) + 1
     return {
         "alerts": {
             "total":     len(alerts_cache),
@@ -393,7 +588,8 @@ def get_stats():
         },
         "fires": {
             "total":     len(fires_cache),
-            "por_nivel": fire_level_count,
+            "por_nivel": fire_intensity_count,
+            "por_intensidad": fire_intensity_count,
             "frp_max":   max((f["frp"] for f in fires_cache), default=0),
         },
     }
@@ -423,7 +619,11 @@ def get_effis_wmts_layer():
             "features": [],
             "error": "Ejecuta generar_effis_wfs.py para crear la capa EFFIS local",
         }
-    return FileResponse(EFFIS_LOCAL_FIRES_PATH, media_type='application/geo+json')
+    return FileResponse(
+        EFFIS_LOCAL_FIRES_PATH,
+        media_type='application/geo+json',
+        headers={"Cache-Control": "no-store"},
+    )
 
 @app.get("/api/effis/wmts/{layer}/{z:int}/{y:int}/{x:int}.png")
 async def get_effis_wmts_tile(layer: str, z: int, y: int, x: int):

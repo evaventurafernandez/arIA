@@ -50,7 +50,13 @@ resetBtn.addTo(map);
 const EFFIS_URL = 'https://maps.effis.emergency.copernicus.eu/effis';
 const EFFIS_FIRES_URL = '/api/effis/wmts';
 const SPAIN_BOUNDARY_URL = '/api/boundaries/spain';
-const TODAY     = new Date().toISOString().split('T')[0];
+
+function localIsoDate(date = new Date()) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().split('T')[0];
+}
+
+const TODAY = localIsoDate();
 
 const WMS_DEFS = {
   effis_fires: {
@@ -76,7 +82,7 @@ const WMS_DEFS = {
   },
   flood: {
     url:     'https://servicios.idee.es/wms-inspire/riesgos-naturales/inundaciones',
-    layer:   'NZ.Flood.FluvialT100',  // inundación fluvial T=100 - MITECO/SNCZI - capa estatica
+    layer:   'NZ.Flood.FluvialT10',   // inundación fluvial T=10 - MITECO/SNCZI - capa estática
     time:    null,
     opacity: 0.6,
     version: '1.3.0',
@@ -231,7 +237,7 @@ function buildEffisFiresGeoJSON(d) {
     },
   });
 
-  fetch(d.url)
+  fetch(d.url, { cache: 'no-store' })
     .then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -353,9 +359,9 @@ const WMS_LEGENDS = {
     note: 'Capa WMS mf010.dc - subcomponente FWI - clases oficiales EFFIS'
   },
   flood: {
-    title: 'Zonas inundables fluviales T=100',
+    title: 'Zonas inundables fluviales T=10',
     items: [
-      { color: '#4da6ff', label: 'Peligrosidad media (T=100 años)' },
+      { color: '#4da6ff', label: 'Peligrosidad alta (T=10 años)' },
     ],
     note: 'MITECO/SNCZI - capa estática oficial España'
   },
@@ -382,15 +388,101 @@ const WMS_LEGENDS = {
   },
 };
 
+const FIRMS_FRP_CLASSES = [
+  { color: '#FFD166', label: '0-5 MW: débil' },
+  { color: '#F8961E', label: '5-20 MW: moderada' },
+  { color: '#E94F37', label: '20-75 MW: alta' },
+  { color: '#8E1B1B', label: '>75 MW: muy alta' },
+];
+
+const FIRMS_CONFIDENCE_STYLES = {
+  n: { label: 'nominal', weight: 1 },
+  h: { label: 'alta', weight: 3 },
+};
+
+function formatFireFrp(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0,0';
+  return num.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+function getFireIntensityLabel(f) {
+  return f.intensity_label || f.frp_category || f.level || 'Sin clasificar';
+}
+
+function getFireIntensityColor(f) {
+  return f.intensity_color || f.level_color || '#F8961E';
+}
+
+function getFireConfidenceCode(f) {
+  const raw = String(f.confidence_code || f.confidence || '').trim().toLowerCase();
+  const aliases = { low: 'l', l: 'l', nominal: 'n', n: 'n', high: 'h', h: 'h' };
+  return aliases[raw] || raw;
+}
+
+function getFireConfidenceLabel(f) {
+  const code = getFireConfidenceCode(f);
+  return f.confidence_label || FIRMS_CONFIDENCE_STYLES[code]?.label || code || 'no indicada';
+}
+
+function getFireBorderWeight(f) {
+  return FIRMS_CONFIDENCE_STYLES[getFireConfidenceCode(f)]?.weight || 1;
+}
+
+function getFireRadius(f) {
+  const frp = Number(f.frp) || 0;
+  if (frp > 75) return 11;
+  if (frp > 20) return 9;
+  if (frp > 5) return 7;
+  return 5;
+}
+
+function getFireDayNightLabel(f) {
+  const raw = String(f.daynight || '').trim().toUpperCase();
+  if (raw === 'D') return 'Día';
+  if (raw === 'N') return 'Noche';
+  return raw || 'no indicado';
+}
+
+function getFireDateTimeLabel(f) {
+  const hora = formatFireTime(f);
+  const date = f.acq_date || 'fecha no indicada';
+  return `${date}${hora ? ` ${hora}` : ''} UTC`;
+}
+
 function updateLegend() {
   const el = document.getElementById('wms-legend');
   if (!el) return;
  
   const wmsKeys = Object.keys(wmsActive);
   const showCorine = corineVisible && corineLayer;
-  if (!wmsKeys.length && !showCorine) { el.style.display = 'none'; return; }
+  const showFirms = showFires && !firesError;
+  if (!wmsKeys.length && !showCorine && !showFirms) { el.style.display = 'none'; return; }
  
   el.style.display = 'block';
+
+  const firmsHtml = showFirms ? (() => {
+    const frpItems = FIRMS_FRP_CLASSES.map(i =>
+      `<div class="leg-item">
+        <span class="leg-dot" style="background:${i.color}"></span>
+        <span class="leg-label">${i.label}</span>
+      </div>`
+    ).join('');
+    return `<div class="leg-block">
+      <div class="leg-title">Potencia radiativa del foco (FRP, MW)</div>
+      ${frpItems}
+      <div class="leg-subtitle">Confianza de detección</div>
+      <div class="leg-item">
+        <span class="leg-ring" style="border-width:1px"></span>
+        <span class="leg-label">nominal</span>
+      </div>
+      <div class="leg-item">
+        <span class="leg-ring" style="border-width:3px"></span>
+        <span class="leg-label">alta</span>
+      </div>
+      <div class="leg-note">Categorías visuales de intensidad; no son umbrales oficiales NASA.</div>
+    </div>`;
+  })() : '';
  
   const wmsHtml = wmsKeys.map(key => {
     const leg = WMS_LEGENDS[key];
@@ -422,7 +514,7 @@ function updateLegend() {
     </div>`;
   })() : '';
  
-  el.innerHTML = wmsHtml + corineHtml;
+  el.innerHTML = firmsHtml + wmsHtml + corineHtml;
 }
  
 // CORINE (GeoJSON filtrado desde backend) 
@@ -600,7 +692,8 @@ function buildClientStats(alerts, fires) {
     levelCount[a.level] = (levelCount[a.level] || 0) + 1;
   });
   fires.forEach(f => {
-    fireLevelCount[f.level] = (fireLevelCount[f.level] || 0) + 1;
+    const intensity = getFireIntensityLabel(f);
+    fireLevelCount[intensity] = (fireLevelCount[intensity] || 0) + 1;
   });
   return {
     alerts: { total: alerts.length, por_nivel: levelCount },
@@ -644,6 +737,7 @@ async function init() {
   renderAlerts();
   renderFires();
   renderList();
+  updateLegend();
 }
 
 // Filtrado
@@ -753,17 +847,27 @@ function renderFires() {
     const lat = Number(f.latitude);
     const lon = Number(f.longitude);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    const radius = f.level === 'Rojo' ? 10 : f.level === 'Naranja' ? 7 : 5;
+    const intensityLabel = getFireIntensityLabel(f);
+    const intensityColor = getFireIntensityColor(f);
+    const confidenceLabel = getFireConfidenceLabel(f);
+    const radius = getFireRadius(f);
     const circle = L.circleMarker([lat, lon], {
-      radius, color: f.level_color, fillColor: f.level_color,
-      fillOpacity: 0.85, weight: 1.5,
+      radius,
+      color: '#111827',
+      fillColor: intensityColor,
+      fillOpacity: 0.85,
+      weight: getFireBorderWeight(f),
+      opacity: 0.95,
     }).addTo(map);
     circle.fireId = f.id;
 
-    const hora = formatFireTime(f);
     circle.bindTooltip(
-      `<b>Foco de incendio</b><br>FRP: ${f.frp} MW · `+
-      `<span style="color:${f.level_color}">${f.level}</span><br>${f.acq_date} ${hora} UTC`,
+      `<b>Foco FIRMS</b><br>`+
+      `FRP: ${formatFireFrp(f.frp)} MW · <span style="color:${intensityColor}">${escapeHtml(intensityLabel)}</span><br>`+
+      `Confianza: ${escapeHtml(confidenceLabel)}<br>`+
+      `Fecha/hora: ${escapeHtml(getFireDateTimeLabel(f))}<br>`+
+      `Satélite: ${escapeHtml(f.satellite || f.firms_source || 'no indicado')}<br>`+
+      `Día/noche: ${escapeHtml(getFireDayNightLabel(f))}`,
       { sticky: true }
     );
     
@@ -837,16 +941,19 @@ function renderList() {
       .sort((a,b) => b.frp - a.frp);
     if (!sorted.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
     el.innerHTML = sorted.map(f => {
-      const hora = formatFireTime(f);
       const lat = Number(f.latitude);
       const lon = Number(f.longitude);
-      return `<div class="card" data-id="${f.id}"
-        style="border-left-color:${f.level_color}" onclick="zoomToFire(${lat},${lon},'${f.id}')">
+      const intensityLabel = getFireIntensityLabel(f);
+      const intensityColor = getFireIntensityColor(f);
+      const confidenceLabel = getFireConfidenceLabel(f);
+      return `<div class="card fire-card" data-id="${f.id}"
+        style="border-left-color:${intensityColor}" onclick="zoomToFire(${lat},${lon},'${f.id}')">
         <div class="name">${lat.toFixed(3)}, ${lon.toFixed(3)}</div>
-        <div class="area">${f.acq_date} ${hora} UTC · ${f.satellite}</div>
+        <div class="area">${escapeHtml(getFireDateTimeLabel(f))} · ${escapeHtml(f.satellite || f.firms_source || '')}</div>
         <div class="meta">
-          <span class="badge" style="background:${f.level_color}22;color:${f.level_color}">${f.level}</span>
-          <span class="time">FRP: ${f.frp} MW</span>
+          <span class="badge" style="background:${intensityColor}22;color:${intensityColor}">${escapeHtml(intensityLabel)}</span>
+          <span class="confidence-badge">Confianza: ${escapeHtml(confidenceLabel)}</span>
+          <span class="time">FRP: ${formatFireFrp(f.frp)} MW</span>
         </div>
       </div>`;
     }).join('');
@@ -899,6 +1006,7 @@ function toggleLayer(type, enabled) {
     else if (showAlerts) activeList = 'alerts';
   }
   renderList();
+  updateLegend();
 }
 
 // Filtros de nivel

@@ -113,6 +113,8 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
 .card .future-tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #2a1e35; color: #a06af8; border: 1px solid #a06af8; }
 .card .time  { font-size: 10px; color: #555; }
 .card .desc  { font-size: 11px; color: #7ab8f5; margin-top: 5px; line-height: 1.4; border-top: 1px solid #2a2d3a; padding-top: 5px; }
+.fire-card .meta { justify-content: flex-start; flex-wrap: wrap; }
+.confidence-badge { font-size: 10px; color: #aaa; border: 1px solid #2a2d3a; border-radius: 8px; padding: 1px 6px; }
 
 .empty { text-align: center; padding: 24px 10px; color: #555; font-size: 12px; }
 
@@ -122,15 +124,17 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
 #wms-legend {
   position: absolute; bottom: 100px; left: 10px; z-index: 900;
   background: #1a1d27ee; border: 1px solid #2a2d3a; border-radius: 8px;
-  padding: 10px 12px; max-width: 220px; pointer-events: none;
+  padding: 10px 12px; max-width: 250px; pointer-events: none;
 }
 .leg-block { margin-bottom: 8px; }
 .leg-block:last-child { margin-bottom: 0; }
 .leg-title { font-size: 11px; font-weight: 600; color: #ddd; margin-bottom: 5px; }
 .leg-item  { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .leg-dot   { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.leg-ring  { width: 11px; height: 11px; border-radius: 50%; border-style: solid; border-color: #ddd; background: #0000; flex-shrink: 0; }
 .leg-label { font-size: 10px; color: #aaa; }
 .leg-note  { font-size: 10px; color: #555; margin-top: 4px; font-style: italic; }
+.leg-subtitle { font-size: 10px; color: #777; margin: 7px 0 4px; }
 
 .flood-icon {
   font-size: 10px; color: #4da6ff; font-weight: 600;
