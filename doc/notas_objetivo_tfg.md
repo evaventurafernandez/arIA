@@ -18,7 +18,7 @@ El prototipo ya cuenta con un mapa Leaflet, una API FastAPI y varias capas GIS i
 - representar avisos como polígonos cuando incluyen geometría;
 - consultar focos NASA FIRMS recientes y filtrarlos con el límite de España;
 - clasificar focos por FRP;
-- activar capas WMS de inundabilidad T=100, FWI, sequía DC y CORINE;
+- activar capas WMS de inundabilidad T=10, FWI, sequía DC y CORINE;
 - usar una capa CORINE local filtrada para usos forestales y agrícolas;
 - mostrar focos EFFIS/Copernicus vectorizados desde teselas WMTS;
 - usar leyenda dinámica, filtros, listado lateral y línea temporal de avisos;
