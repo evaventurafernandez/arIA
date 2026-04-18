@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 data/CLC2018_ES.gpkg
+data-store/files/
+data-store/postgres/data/
