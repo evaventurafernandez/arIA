@@ -8,7 +8,9 @@ Fases 4b y 5 de la PoC: carga completa eficiente desde un `FileGDB` empaquetado 
 - `docker-compose.yml`: añade el servicio `gdal` con una imagen oficial de GDAL con bindings de Python.
 - `infra/postgres/initdb/002_landcover_source.sql`: crea `ingest.ingest_file`, las tablas `staging`, las tablas `source` y la vista unificada.
 - `infra/postgres/initdb/003_landcover_core.sql`: crea el catalogo semantico de clases y la tabla canonica `core.landcover_polygon`.
+- `infra/postgres/initdb/004_landcover_pub.sql`: crea `pub.landcover_filtered` como vista materializada derivada para explotacion.
 - `refresh_landcover_core.sql`: reconstruye `core` desde `source` reparando y canonizando geometria.
+- `refresh_landcover_pub.sql`: refresca `pub` desde `core` reproduciendo la simplificacion y el dissolve del flujo historico.
 
 ## Origen actual de la fase
 
@@ -39,6 +41,7 @@ Si el `FileGDB` ya existe extraido y el ZIP no ha cambiado, el proceso reutiliza
    ```bash
    docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/002_landcover_source.sql
    docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/003_landcover_core.sql
+   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/004_landcover_pub.sql
    ```
 
 3. Ejecutar la importación completa eficiente:
@@ -63,13 +66,25 @@ Si el `FileGDB` ya existe extraido y el ZIP no ha cambiado, el proceso reutiliza
 6. Reconstruir `core` desde `source`:
 
    ```bash
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /work/infra/ingest/refresh_landcover_core.sql
+   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_core.sql
    ```
 
 7. Verificar `core`:
 
    ```bash
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /work/infra/ingest/verify_landcover_core.sql
+   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/verify_landcover_core.sql
+   ```
+
+8. Reconstruir `pub` desde `core`:
+
+   ```bash
+   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_pub.sql
+   ```
+
+9. Verificar `pub`:
+
+   ```bash
+   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/verify_landcover_pub.sql
    ```
 
 ## Variables útiles
@@ -87,6 +102,8 @@ Si el `FileGDB` ya existe extraido y el ZIP no ha cambiado, el proceso reutiliza
 - El filtrado funcional se hace antes de persistir en PostGIS.
 - La carga masiva entra primero en `staging` y solo después se consolida a `source`.
 - `core` no hace `dissolve`; conserva una fila por geometria de `source` y normaliza solo la semantica y la geometria canonica.
+- `pub.landcover_filtered` es una vista materializada y no una vista simple porque el dissolve y la simplificacion deben ejecutarse en batch, no por peticion.
+- `pub.landcover_filtered` reproduce el flujo historico: simplificacion por feature con tolerancia `0.005`, dissolve por clase y payload minimo con `feature_id`, `class_code`, `class_label`, `class_color`, `theme` y `geom`.
 - La ejecución es portable: el mismo comando `docker compose run` sirve en Linux y en Windows con Docker Desktop.
 - La importación usa GDAL desde Python, sin wrappers de shell como pieza principal.
 - La carga bulk usa el driver PostgreSQL de GDAL con `PG_USE_COPY=YES`.

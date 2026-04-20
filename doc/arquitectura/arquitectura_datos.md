@@ -193,6 +193,16 @@ Ejemplos:
 - `pub_landcover_simplified_z8`
 - `pub_boundary_spain`
 
+Para la PoC de `landcover`, `pub` se concreta como `pub.landcover_filtered`.
+
+Decisiones de esta PoC:
+
+- `pub.landcover_filtered` es una vista materializada, no una vista simple.
+- El motivo es que la simplificacion y el dissolve por clase tienen coste batch apreciable y no deben recalcularse por peticion.
+- El pipeline de `pub` parte de `core.landcover_polygon`, simplifica cada feature con tolerancia `0.005`, agrega por `class_code` y persiste una geometria `MultiPolygon` en `EPSG:4326`.
+- El payload publicado queda reducido a `feature_id`, `class_code`, `class_label`, `class_color`, `theme` y `geom`.
+- Ese resultado es el equivalente funcional del `data/landcover.geojson` historico, pero separado del nivel canonico `core`.
+
 ## 7. Decisión sobre homogeneización
 
 La homogeneización debe hacerse en `core`, no en `raw`.

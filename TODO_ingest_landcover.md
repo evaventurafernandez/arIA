@@ -216,21 +216,29 @@ Estado del bloque:
 - Resuelto el catalogo semantico `core.landcover_class` para `CODE_18 -> label/color/theme`.
 - Resuelta la canonizacion geometrica a `MultiPolygon` valido en `EPSG:4326`.
 - Resuelta la trazabilidad minima por `source_layer`, `source_fid`, `source_objectid` e `ingest_id`.
-- Pendiente para fases posteriores la derivacion `pub` con `dissolve` y simplificacion.
+- Pendiente para fases posteriores la derivacion `pub` adicional por nivel de simplificacion.
 
 ### 4.4 Tabla o vista `pub`
 
-- [ ] Diseñar `pub.landcover_filtered`.
-- [ ] Decidir si `pub` será tabla materializada, vista materializada o vista simple en esta PoC.
-- [ ] Reflejar en `pub` el resultado funcional actual equivalente al `GeoJSON` de salida.
-- [ ] Incluir solo los campos mínimos para explotación posterior:
+- [x] Diseñar `pub.landcover_filtered`.
+- [x] Decidir si `pub` será tabla materializada, vista materializada o vista simple en esta PoC.
+- [x] Reflejar en `pub` el resultado funcional actual equivalente al `GeoJSON` de salida.
+- [x] Incluir solo los campos mínimos para explotación posterior:
   - `feature_id`,
   - `class_code`,
   - `class_label`,
   - `class_color`,
   - `geometry`.
-- [ ] Diseñar una versión simplificada para escala media o baja.
+- [x] Mantener `theme` como campo funcional adicional de publicación derivado de `core`.
+- [ ] Diseñar una segunda publicación simplificada específica para escala media o baja.
 - [ ] Evaluar una segunda publicación por nivel de simplificación, aunque no se exponga todavía.
+
+Estado del bloque:
+
+- Resuelto `pub.landcover_filtered` como vista materializada derivada estática/casi estática.
+- Resuelto el pipeline `core -> pub` con simplificación `0.005` por feature y dissolve por `class_code`.
+- Resuelto el payload mínimo publicado con una fila por clase.
+- Pendiente una segunda publicación por escala y la comparación detallada de tamaño frente al `GeoJSON` histórico.
 
 ## Bloque 5. Diseñar la transformación del dato
 
@@ -273,8 +281,8 @@ Estado del bloque:
   - reproyección.
 - [x] Diseñar el paso de poscarga en SQL para consolidar ambas capas filtradas en `source`.
 - [x] Implementar extracción controlada del ZIP a una ruta canónica para evitar acceso pesado sobre `/vsizip` en la carga completa.
-- [ ] Diseñar el paso SQL para construir `core`.
-- [ ] Diseñar el paso SQL para construir `pub`.
+- [x] Diseñar el paso SQL para construir `core`.
+- [x] Diseñar el paso SQL para construir `pub`.
 - [ ] Definir si la orquestación se implementará con:
   - script shell,
   - script Python,
@@ -298,8 +306,8 @@ Estado del bloque:
 - [x] Verificar que todas las features esperadas con `CODE_18` objetivo aparecen en `source`.
 - [x] Verificar que la trazabilidad de ingesta queda registrada en `ingest.ingest_file` y enlazada desde `source`.
 - [x] Verificar que `core` contiene la semántica homogénea esperada.
-- [ ] Verificar que `pub` reproduce el conjunto final actual.
-- [ ] Comparar el resultado de `pub` con el `GeoJSON` generado por `generar_landcover.py`.
+- [x] Verificar que `pub` reproduce el conjunto final actual.
+- [x] Comparar de forma funcional el resultado de `pub` con el `GeoJSON` generado por `generar_landcover.py`.
 - [ ] Medir al menos:
   - número de features,
   - tipos geométricos,
@@ -314,7 +322,7 @@ Estado del bloque:
 - [ ] Definir tests mínimos para el pipeline de ingestión cuando sea aplicable.
 - [ ] Añadir tests de validación del mapping `CODE_18 -> label, color`.
 - [ ] Añadir tests o comprobaciones automatizadas para verificar que solo se cargan las clases objetivo.
-- [ ] Añadir tests o comprobaciones automatizadas sobre el número esperado de clases publicadas en `pub`.
+- [x] Añadir tests o comprobaciones automatizadas sobre el número esperado de clases publicadas en `pub`.
 - [x] Añadir tests de esquema mínimos para comprobar existencia de tablas, vistas, índices y schemas esperados.
 - [ ] Añadir tests o validaciones de compatibilidad del flujo Docker cuando sea razonable automatizarlos.
 - [ ] Documentar qué comprobaciones quedan fuera de tests automáticos y se validan manualmente.
@@ -324,10 +332,10 @@ Estado del bloque:
 
 Aunque esta fase no implementa servicios, hay que dejar la PoC preparada para ellos.
 
-- [ ] Asegurar que `pub` no depende de campos innecesarios.
-- [ ] Asegurar que hay geometrías aptas para consultas por `bbox`.
-- [ ] Dejar preparada una vista compatible con un futuro `/features?bbox=...`.
-- [ ] Definir una posible clave de entidad estable para detalle por feature.
+- [x] Asegurar que `pub` no depende de campos innecesarios.
+- [x] Asegurar que hay geometrías aptas para consultas por `bbox`.
+- [x] Dejar preparada una vista compatible con un futuro `/features?bbox=...`.
+- [x] Definir una posible clave de entidad estable para detalle por feature.
 - [ ] Evaluar si conviene una versión simplificada adicional para mapas a pequeña escala.
 - [ ] Evaluar si el `dissolve` actual responde a una necesidad real de visualización o si perjudica la futura interacción por feature.
 - [ ] Documentar qué parte del diseño está pensada para GeoServer / MapServer en una fase posterior.
