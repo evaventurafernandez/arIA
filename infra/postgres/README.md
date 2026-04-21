@@ -9,6 +9,7 @@ Este directorio contiene la base del entorno Docker para la PoC de `landcover`.
 - `infra/postgres/initdb/002_landcover_source.sql`: estructuras mínimas de `ingest` y `source` para la PoC.
 - `infra/postgres/initdb/003_landcover_core.sql`: catalogo semantico y estructura canonica de `core` para landcover.
 - `infra/postgres/initdb/004_landcover_pub.sql`: publicacion derivada `pub.landcover_filtered` para explotacion.
+- `infra/postgres/initdb/005_landcover_mvt.sql`: publicacion derivada `pub.landcover_mvt_source` para vector tiles MVT.
 
 ## Estructura base
 
@@ -34,6 +35,7 @@ La configuración usa rutas relativas para funcionar en Linux y en Windows con D
 El bootstrap de base no depende de scripts shell; la carga filtrada de `landcover` se ejecuta aparte en un contenedor GDAL reproducible con Python y bindings oficiales de GDAL.
 La canonizacion desde `source` a `core` se ejecuta con SQL reproducible desde `infra/ingest/refresh_landcover_core.sql`.
 La publicacion derivada desde `core` a `pub` se refresca con `infra/ingest/refresh_landcover_pub.sql`.
+La publicacion orientada a teselas vectoriales se refresca con `infra/ingest/refresh_landcover_mvt.sql`.
 
 ## Estrategia de migraciones
 

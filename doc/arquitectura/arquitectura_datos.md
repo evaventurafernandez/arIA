@@ -203,6 +203,14 @@ Decisiones de esta PoC:
 - El payload publicado queda reducido a `feature_id`, `class_code`, `class_label`, `class_color`, `theme` y `geom`.
 - Ese resultado es el equivalente funcional del `data/landcover.geojson` historico, pero separado del nivel canonico `core`.
 
+Para la evolución a `vector tiles`, `pub` incorpora además una segunda publicación:
+
+- `pub.landcover_mvt_source` como vista materializada por feature en `EPSG:3857`.
+- Esta publicación no hace `dissolve` por clase; preserva una fila por feature para teselado vectorial.
+- El payload publicado queda reducido a `core_feature_id`, `class_code`, `class_label`, `class_color`, `theme` y `geom`.
+- Su finalidad es servir `MVT` desde el backend sin reproyectar `core` en cada petición.
+- El render principal del visor puede apoyarse en esta publicación mientras `pub.landcover_filtered` se mantiene como salida GeoJSON agregada de compatibilidad.
+
 ## 7. Decisión sobre homogeneización
 
 La homogeneización debe hacerse en `core`, no en `raw`.

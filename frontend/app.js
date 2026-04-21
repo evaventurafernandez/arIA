@@ -425,110 +425,107 @@ function updateLegend() {
   el.innerHTML = wmsHtml + corineHtml;
 }
  
-// CORINE (GeoJSON filtrado desde backend) 
-let corineLayer   = null;   // L.geoJSON instance
+// CORINE (vector tiles MVT desde backend)
+let corineLayer   = null;   // L.vectorGrid instance
 let corineVisible = false;
-let corineAbortController = null;
-let corineRefreshTimer = null;
-let corineRequestSeq = 0;
-const CORINE_REFRESH_DELAY_MS = 250;
-const CORINE_DEFAULT_LIMIT = 1200;
+let corineTooltip = null;
+const CORINE_VECTOR_TILE_URL = '/api/landcover/tiles/{z}/{x}/{y}.mvt';
+
+const CORINE_CLASSES = [
+  { code: '311', color: '#4ce600', label: 'Bosque de frondosas' },
+  { code: '312', color: '#267300', label: 'Bosque de coníferas' },
+  { code: '313', color: '#70a800', label: 'Bosque mixto' },
+  { code: '321', color: '#d4e6a5', label: 'Pastizales naturales' },
+  { code: '322', color: '#a8a800', label: 'Brezales y matorrales' },
+  { code: '323', color: '#d4a46a', label: 'Vegetación esclerófila' },
+  { code: '324', color: '#c8c800', label: 'Matorral en transición' },
+  { code: '211', color: '#ffffa8', label: 'Cultivos en secano' },
+  { code: '242', color: '#e6e600', label: 'Mosaico de cultivos' },
+];
+
+const CORINE_CLASS_INDEX = Object.fromEntries(CORINE_CLASSES.map(item => [item.code, item]));
  
 const CORINE_LEGEND = {
   title: 'Usos del suelo (filtrado)',
-  items: [
-    { color: '#267300', label: 'Bosque de coníferas' },
-    { color: '#4ce600', label: 'Bosque de frondosas' },
-    { color: '#70a800', label: 'Bosque mixto' },
-    { color: '#a8a800', label: 'Brezales y matorrales' },
-    { color: '#d4a46a', label: 'Vegetación esclerófila' },
-    { color: '#d4e6a5', label: 'Pastizales naturales' },
-    { color: '#ffffa8', label: 'Cultivos en secano' },
-    { color: '#e6e600', label: 'Mosaico de cultivos' },
-  ],
+  items: CORINE_CLASSES.map(item => ({ color: item.color, label: item.label })),
   note: 'CORINE Land Cover 2018 - IGN/CNIG - usos forestales y agrícolas'
 };
  
-function getCorineRequestUrl() {
-  const bounds = map.getBounds();
-  const size = map.getSize();
-  const bbox = [
-    bounds.getWest(),
-    bounds.getSouth(),
-    bounds.getEast(),
-    bounds.getNorth(),
-  ].map(value => value.toFixed(6)).join(',');
-  const params = new URLSearchParams({
-    bbox,
-    zoom: String(map.getZoom()),
-    width: String(size.x),
-    height: String(size.y),
-    limit: String(CORINE_DEFAULT_LIMIT),
-  });
-  return `/api/landcover/features?${params.toString()}`;
+function getCorineFeatureStyle(properties) {
+  const classInfo = CORINE_CLASS_INDEX[properties.class_code] || null;
+  const color = classInfo?.color || properties.class_color || properties.color || '#888888';
+  return {
+    fill:        true,
+    fillColor:   color,
+    fillOpacity: 0.55,
+    color,
+    opacity:     0.5,
+    weight:      0.2,
+  };
 }
 
-function buildCorineLayer(data) {
-  return L.geoJSON(data, {
-    style: f => ({
-      color:       f.properties.color,
-      fillColor:   f.properties.color,
-      fillOpacity: 0.55,
-      weight:      0.3,
-      opacity:     0.5,
-    }),
-    onEachFeature: (f, layer) => {
-      layer.bindTooltip(f.properties.label, { sticky: true });
-    },
-  });
-}
-
-async function loadCorineLayer() {
-  const requestSeq = ++corineRequestSeq;
-  if (corineAbortController) corineAbortController.abort();
-  corineAbortController = new AbortController();
-  try {
-    const response = await fetch(getCorineRequestUrl(), {
-      signal: corineAbortController.signal,
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (requestSeq !== corineRequestSeq) return;
-    const nextLayer = buildCorineLayer(data);
-    if (corineLayer) map.removeLayer(corineLayer);
-    corineLayer = nextLayer;
-    if (corineVisible) corineLayer.addTo(map);
-    updateLegend();
-  } catch(e) {
-    if (e.name === 'AbortError') return;
-    console.error('Error cargando CORINE:', e);
+function clearCorineTooltip() {
+  if (corineTooltip) {
+    map.removeLayer(corineTooltip);
+    corineTooltip = null;
   }
 }
 
-function scheduleCorineRefresh() {
-  if (!corineVisible) return;
-  if (corineRefreshTimer) clearTimeout(corineRefreshTimer);
-  corineRefreshTimer = setTimeout(() => {
-    corineRefreshTimer = null;
-    loadCorineLayer();
-  }, CORINE_REFRESH_DELAY_MS);
+function ensureCorineTooltip(latlng, content) {
+  if (!corineTooltip) {
+    corineTooltip = L.tooltip({
+      permanent: false,
+      sticky: true,
+      direction: 'top',
+      opacity: 0.95,
+    });
+  }
+  corineTooltip.setLatLng(latlng).setContent(content);
+  if (!map.hasLayer(corineTooltip)) corineTooltip.addTo(map);
 }
- 
+
+function buildCorineLayer() {
+  const layerStyles = {
+    landcover: properties => getCorineFeatureStyle(properties),
+    landcover_mvt_source: properties => getCorineFeatureStyle(properties),
+    'pub.landcover_mvt_source': properties => getCorineFeatureStyle(properties),
+  };
+  const layer = L.vectorGrid.protobuf(CORINE_VECTOR_TILE_URL, {
+    rendererFactory: L.canvas.tile,
+    interactive: true,
+    maxNativeZoom: 14,
+    vectorTileLayerStyles: layerStyles,
+    getFeatureId: feature => feature.properties.core_feature_id,
+  });
+  layer.on('mouseover', e => {
+    const props = e.layer.properties || {};
+    const label = props.class_label || props.label || 'Uso del suelo';
+    ensureCorineTooltip(e.latlng, label);
+  });
+  layer.on('mousemove', e => {
+    if (corineTooltip) corineTooltip.setLatLng(e.latlng);
+  });
+  layer.on('mouseout', () => {
+    clearCorineTooltip();
+  });
+  layer.on('click', e => {
+    const props = e.layer.properties || {};
+    const label = props.class_label || props.label || 'Uso del suelo';
+    L.popup()
+      .setLatLng(e.latlng)
+      .setContent(`<b>${label}</b><br>Código CORINE: ${props.class_code || 'n/d'}`)
+      .openOn(map);
+  });
+  return layer;
+}
+
 function toggleCorine(enabled) {
   corineVisible = enabled;
   if (enabled) {
-    scheduleCorineRefresh();
+    if (!corineLayer) corineLayer = buildCorineLayer();
     if (corineLayer) corineLayer.addTo(map);
   } else {
-    if (corineRefreshTimer) {
-      clearTimeout(corineRefreshTimer);
-      corineRefreshTimer = null;
-    }
-    if (corineAbortController) {
-      corineAbortController.abort();
-      corineAbortController = null;
-    }
+    clearCorineTooltip();
     if (corineLayer) map.removeLayer(corineLayer);
   }
   updateLegend();
@@ -1004,9 +1001,6 @@ function fmtDate(iso) {
 // Listeners WMS y capas de datos 
 const chkCorine = document.getElementById('chk-corine');
 if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
-map.on('moveend zoomend', () => {
-  if (corineVisible) scheduleCorineRefresh();
-});
  
 ['effis_fires','flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
@@ -1018,4 +1012,9 @@ const chkFires  = document.getElementById('chk-fires');
 if (chkAlerts) chkAlerts.addEventListener('change', e => toggleLayer('alerts', e.target.checked));
 if (chkFires)  chkFires.addEventListener('change',  e => toggleLayer('fires',  e.target.checked));
  
-init();
+init().then(() => {
+  const urlParams = new URLSearchParams(window.location.search);
+  if (['1', 'true', 'yes'].includes((urlParams.get('corine') || '').toLowerCase())) {
+    autoActivateCorine();
+  }
+});
