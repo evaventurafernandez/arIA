@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 data/CLC2018_ES.gpkg
+tmp/
