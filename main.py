@@ -235,7 +235,16 @@ def fetch_landcover_layer_metadata() -> dict:
             SELECT max(canonicalized_at)
             FROM core.landcover_polygon
         ),
-        'source_view', 'pub.landcover_filtered'
+        'source_view', 'pub.landcover_filtered',
+        'tile_source_view', 'pub.landcover_mvt_source',
+        'tile_feature_count', (
+            SELECT count(*)
+            FROM pub.landcover_mvt_source
+        ),
+        'render_mode', 'mvt',
+        'tile_format', 'application/vnd.mapbox-vector-tile',
+        'tile_url_template', '/api/landcover/tiles/{z}/{x}/{y}.mvt',
+        'tile_layer_name', 'landcover'
     )
     FROM pub.landcover_filtered
     """
@@ -253,6 +262,12 @@ def fetch_landcover_layer_metadata() -> dict:
         "bbox": None,
         "refreshed_at": None,
         "source_view": "pub.landcover_filtered",
+        "tile_source_view": "pub.landcover_mvt_source",
+        "tile_feature_count": 0,
+        "render_mode": "mvt",
+        "tile_format": "application/vnd.mapbox-vector-tile",
+        "tile_url_template": "/api/landcover/tiles/{z}/{x}/{y}.mvt",
+        "tile_layer_name": "landcover",
     }
 
 def fetch_landcover_publication_cache_info() -> dict:
@@ -280,6 +295,90 @@ def build_landcover_cache_headers() -> dict[str, str]:
         headers["Last-Modified"] = format_datetime(refreshed_at_utc, usegmt=True)
         headers["ETag"] = f'W/"landcover-{cache_info["feature_count"]}-{int(refreshed_at_utc.timestamp())}"'
     return headers
+
+def build_landcover_tile_cache_headers() -> dict[str, str]:
+    headers = build_landcover_cache_headers()
+    headers["Cache-Control"] = "public, max-age=3600"
+    return headers
+
+def get_landcover_tile_simplification_tolerance(z: int) -> float:
+    if z >= 13:
+        return 0.0
+    meters_per_pixel = 156543.03392804097 / (2 ** z)
+    if z <= 6:
+        factor = 0.75
+    elif z <= 8:
+        factor = 0.25
+    elif z <= 10:
+        factor = 0.15
+    else:
+        factor = 0.05
+    return meters_per_pixel * factor
+
+def fetch_landcover_vector_tile(z: int, x: int, y: int) -> bytes:
+    tolerance = get_landcover_tile_simplification_tolerance(z)
+    sql = """
+    WITH tile_envelope AS (
+        SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+    ),
+    candidate_geom AS (
+        SELECT
+            src.core_feature_id,
+            src.class_code,
+            src.class_label,
+            src.class_color,
+            src.theme,
+            src.geom
+        FROM pub.landcover_mvt_source AS src
+        CROSS JOIN tile_envelope AS env
+        WHERE src.geom && env.geom
+          AND ST_Intersects(src.geom, env.geom)
+    ),
+    mvtgeom AS (
+        SELECT
+            src.core_feature_id,
+            src.class_code,
+            src.class_label,
+            src.class_color,
+            src.theme,
+            class_label AS label,
+            class_color AS color,
+            ST_AsMVTGeom(
+                CASE
+                    WHEN %s > 0 THEN ST_SimplifyPreserveTopology(src.geom, %s)
+                    ELSE src.geom
+                END,
+                env.geom,
+                4096,
+                64,
+                true
+            ) AS geom
+        FROM candidate_geom AS src
+        CROSS JOIN tile_envelope AS env
+    )
+    SELECT ST_AsMVT(tile_rows, 'landcover', 4096, 'geom')
+    FROM (
+        SELECT
+            core_feature_id,
+            class_code,
+            class_label,
+            class_color,
+            theme,
+            label,
+            color,
+            geom
+        FROM mvtgeom
+        WHERE geom IS NOT NULL
+    ) AS tile_rows
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(sql, (z, x, y, tolerance, tolerance))
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return b""
+    return bytes(row[0])
 
 def get_landcover_zoom_config(
     zoom: int,
@@ -663,7 +762,13 @@ async def lifespan(app: FastAPI):
             with conn.cursor() as cur:
                 cur.execute("SELECT count(*) FROM pub.landcover_filtered")
                 landcover_count = cur.fetchone()[0]
-        print(f"  CORINE pub.landcover_filtered listo ({landcover_count} clases publicadas)")
+                cur.execute("SELECT count(*) FROM pub.landcover_mvt_source")
+                landcover_tile_count = cur.fetchone()[0]
+        print(
+            "  CORINE listo "
+            f"(pub.landcover_filtered={landcover_count} clases publicadas, "
+            f"pub.landcover_mvt_source={landcover_tile_count} features para MVT)"
+        )
     except Exception:
         if db_pool is not None:
             db_pool.close()
@@ -785,6 +890,18 @@ def get_landcover_feature(feature_id: int):
     if data is None:
         raise HTTPException(status_code=404, detail="Feature landcover no encontrada")
     return JSONResponse(content=data, media_type="application/geo+json")
+
+@app.get("/api/landcover/tiles/{z:int}/{x:int}/{y:int}.mvt")
+def get_landcover_vector_tile(z: int, x: int, y: int):
+    """Vector tiles MVT de landcover servidas desde PostGIS."""
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no válidas")
+    try:
+        tile = fetch_landcover_vector_tile(z, x, y)
+        headers = build_landcover_tile_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT de landcover: {exc}") from exc
+    return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
 
 @app.get("/api/boundaries/spain")
 def get_spain_boundary():
