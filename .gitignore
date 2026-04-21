@@ -5,3 +5,4 @@ __pycache__/
 data/CLC2018_ES.gpkg
 data-store/files/
 data-store/postgres/data/
+tmp/
