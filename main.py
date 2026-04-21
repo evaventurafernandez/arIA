@@ -7,23 +7,31 @@ import tarfile
 import xml.etree.ElementTree as ET
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import format_datetime
  
 import httpx
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic_settings import BaseSettings
+from psycopg_pool import ConnectionPool
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
 
 # Claves 
 class Settings(BaseSettings):
-    aemet_api_key: str
+    aemet_api_key: str = ""
     firms_map_key: str = ""
     firms_include_modis: bool = False
+    postgres_host: str = "127.0.0.1"
+    postgres_port: int = 5432
+    postgres_db: str = "meteovisor"
+    postgres_user: str = "meteovisor"
+    postgres_password: str = "meteovisor"
     class Config:
         env_file = ".env"
 
@@ -33,6 +41,7 @@ settings = Settings()
 # Cache en memoria 
 alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
+db_pool: ConnectionPool | None = None
 
 EFFIS_WMTS_BASE = "https://maps.effis.emergency.copernicus.eu/gwist/wmts"
 EFFIS_WMTS_LAYERS = {"viirs.hs.today"}
@@ -107,6 +116,8 @@ def parse_cap_xml(xml_bytes: bytes) -> list[dict]:
     return results
 
 async def fetch_aemet_alerts() -> list[dict]:
+    if not settings.aemet_api_key:
+        return []
     base    = "https://opendata.aemet.es/opendata/api"
     headers = {"api_key": settings.aemet_api_key}
     all_alerts = []
@@ -163,6 +174,311 @@ FIRMS_VIIRS_FIELDS = (
     "daynight",
 )
 _SPAIN_GEOM = None
+
+def postgres_conninfo() -> str:
+    return (
+        f"host={settings.postgres_host} "
+        f"port={settings.postgres_port} "
+        f"dbname={settings.postgres_db} "
+        f"user={settings.postgres_user} "
+        f"password={settings.postgres_password}"
+    )
+
+def get_db_pool() -> ConnectionPool:
+    if db_pool is None:
+        raise RuntimeError("El pool PostgreSQL no está inicializado")
+    return db_pool
+
+def fetch_landcover_feature_collection() -> dict:
+    sql = """
+    SELECT jsonb_build_object(
+        'type', 'FeatureCollection',
+        'features', COALESCE(jsonb_agg(
+            jsonb_build_object(
+                'type', 'Feature',
+                'id', feature_id,
+                'geometry', ST_AsGeoJSON(geom)::jsonb,
+                'properties', jsonb_build_object(
+                    'class_code', class_code,
+                    'label', class_label,
+                    'color', class_color,
+                    'theme', theme
+                )
+            )
+            ORDER BY class_code
+        ), '[]'::jsonb)
+    )
+    FROM pub.landcover_filtered
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else {"type": "FeatureCollection", "features": []}
+
+def fetch_landcover_layer_metadata() -> dict:
+    sql = """
+    SELECT jsonb_build_object(
+        'layer_id', 'landcover',
+        'name', 'CORINE Land Cover filtrado',
+        'geometry_type', 'MultiPolygon',
+        'srid', 4326,
+        'feature_count', COUNT(*),
+        'class_count', COUNT(DISTINCT class_code),
+        'bbox', jsonb_build_array(
+            ST_XMin(ST_Extent(geom)),
+            ST_YMin(ST_Extent(geom)),
+            ST_XMax(ST_Extent(geom)),
+            ST_YMax(ST_Extent(geom))
+        ),
+        'refreshed_at', (
+            SELECT max(canonicalized_at)
+            FROM core.landcover_polygon
+        ),
+        'source_view', 'pub.landcover_filtered'
+    )
+    FROM pub.landcover_filtered
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else {
+        "layer_id": "landcover",
+        "name": "CORINE Land Cover filtrado",
+        "geometry_type": "MultiPolygon",
+        "srid": 4326,
+        "feature_count": 0,
+        "class_count": 0,
+        "bbox": None,
+        "refreshed_at": None,
+        "source_view": "pub.landcover_filtered",
+    }
+
+def fetch_landcover_publication_cache_info() -> dict:
+    sql = """
+    SELECT
+        COUNT(*) AS feature_count,
+        max(canonicalized_at) AS refreshed_at
+    FROM core.landcover_polygon
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    return {
+        "feature_count": row[0] if row else 0,
+        "refreshed_at": row[1] if row else None,
+    }
+
+def build_landcover_cache_headers() -> dict[str, str]:
+    cache_info = fetch_landcover_publication_cache_info()
+    headers = {"Cache-Control": "public, max-age=300"}
+    refreshed_at = cache_info["refreshed_at"]
+    if refreshed_at is not None:
+        refreshed_at_utc = refreshed_at.astimezone(timezone.utc)
+        headers["Last-Modified"] = format_datetime(refreshed_at_utc, usegmt=True)
+        headers["ETag"] = f'W/"landcover-{cache_info["feature_count"]}-{int(refreshed_at_utc.timestamp())}"'
+    return headers
+
+def get_landcover_zoom_config(
+    zoom: int,
+    minx: float,
+    miny: float,
+    maxx: float,
+    maxy: float,
+    width: int,
+    height: int,
+) -> dict:
+    span_x = maxx - minx
+    span_y = maxy - miny
+    safe_width = max(width, 1)
+    safe_height = max(height, 1)
+    units_per_pixel = max(span_x / safe_width, span_y / safe_height)
+
+    if zoom <= 5:
+        limit = 800
+        pixel_factor = 2.0
+    elif zoom <= 6:
+        limit = 1200
+        pixel_factor = 1.5
+    elif zoom <= 8:
+        limit = 1800
+        pixel_factor = 1.0
+    elif zoom <= 10:
+        limit = 2500
+        pixel_factor = 0.75
+    elif zoom <= 12:
+        limit = 3500
+        pixel_factor = 0.5
+    else:
+        limit = 5000
+        pixel_factor = 0.25
+
+    tolerance = units_per_pixel * pixel_factor
+
+    if units_per_pixel <= 0.00008:
+        tolerance = 0.0
+    elif units_per_pixel <= 0.0002:
+        tolerance = min(tolerance, units_per_pixel * 0.35)
+    elif units_per_pixel <= 0.0005:
+        tolerance = min(tolerance, units_per_pixel * 0.5)
+
+    return {
+        "source": "core",
+        "simplification_tolerance": tolerance,
+        "limit": limit,
+        "units_per_pixel": units_per_pixel,
+    }
+
+def fetch_landcover_features_by_bbox(
+    minx: float,
+    miny: float,
+    maxx: float,
+    maxy: float,
+    zoom: int,
+    width: int,
+    height: int,
+    limit: int,
+) -> dict:
+    config = get_landcover_zoom_config(zoom, minx, miny, maxx, maxy, width, height)
+    tolerance = config["simplification_tolerance"]
+    units_per_pixel = config["units_per_pixel"]
+    sql = """
+    WITH envelope AS (
+        SELECT ST_MakeEnvelope(%s, %s, %s, %s, 4326) AS geom
+    ),
+    matching AS (
+        SELECT
+            class_code,
+            class_label,
+            class_color,
+            theme,
+            ST_Multi(
+                ST_CollectionExtract(
+                    CASE
+                        WHEN %s > 0 THEN ST_SimplifyPreserveTopology(
+                            ST_Intersection(lp.geom, e.geom),
+                            %s
+                        )
+                        ELSE ST_Intersection(lp.geom, e.geom)
+                    END,
+                    3
+                )
+            )::geometry(MultiPolygon, 4326) AS geom
+        FROM core.landcover_polygon lp
+        JOIN envelope e ON lp.geom && e.geom AND ST_Intersects(lp.geom, e.geom)
+    ),
+    non_empty AS (
+        SELECT *
+        FROM matching
+        WHERE NOT ST_IsEmpty(geom)
+    ),
+    aggregated AS (
+        SELECT
+            format('landcover_%%s', class_code) AS feature_id,
+            class_code,
+            class_label,
+            class_color,
+            theme,
+            ST_Multi(
+                ST_CollectionExtract(
+                    ST_UnaryUnion(ST_Collect(geom)),
+                    3
+                )
+            )::geometry(MultiPolygon, 4326) AS geom
+        FROM non_empty
+        GROUP BY class_code, class_label, class_color, theme
+    )
+    SELECT jsonb_build_object(
+        'type', 'FeatureCollection',
+        'features', COALESCE(jsonb_agg(
+            jsonb_build_object(
+                'type', 'Feature',
+                'id', feature_id,
+                'geometry', ST_AsGeoJSON(geom)::jsonb,
+                'properties', jsonb_build_object(
+                    'class_code', class_code,
+                    'label', class_label,
+                    'color', class_color,
+                    'theme', theme
+                )
+            )
+            ORDER BY class_code
+        ), '[]'::jsonb),
+        'metadata', jsonb_build_object(
+            'zoom', %s,
+            'source', 'core.landcover_polygon',
+            'aggregation', 'class',
+            'simplification_tolerance', %s,
+            'units_per_pixel', %s,
+            'returned_count', COUNT(*),
+            'matched_feature_count', (SELECT COUNT(*) FROM non_empty),
+            'truncated', false
+        )
+    )
+    FROM aggregated
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(
+                sql,
+                (
+                    minx,
+                    miny,
+                    maxx,
+                    maxy,
+                    tolerance,
+                    tolerance,
+                    zoom,
+                    tolerance,
+                    units_per_pixel,
+                ),
+            )
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else {
+        "type": "FeatureCollection",
+        "features": [],
+        "metadata": {
+            "zoom": zoom,
+            "source": "core.landcover_polygon",
+            "aggregation": "class",
+            "simplification_tolerance": tolerance,
+            "units_per_pixel": units_per_pixel,
+            "returned_count": 0,
+            "matched_feature_count": 0,
+            "truncated": False,
+        },
+    }
+
+def fetch_landcover_feature_detail(core_feature_id: int) -> dict | None:
+    sql = """
+    SELECT jsonb_build_object(
+        'type', 'Feature',
+        'id', core_feature_id,
+        'geometry', ST_AsGeoJSON(geom)::jsonb,
+        'properties', jsonb_build_object(
+            'class_code', class_code,
+            'label', class_label,
+            'color', class_color,
+            'theme', theme,
+            'dataset_id', dataset_id,
+            'source_layer', source_layer,
+            'source_objectid', source_objectid,
+            'ingest_id', ingest_id,
+            'imported_at', imported_at,
+            'canonicalized_at', canonicalized_at
+        )
+    )
+    FROM core.landcover_polygon
+    WHERE core_feature_id = %s
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (core_feature_id,))
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else None
 
 async def load_spain_geometry():
     global _SPAIN_GEOM
@@ -335,24 +651,37 @@ fetch_firms_fires = fetch_spain_hotspots
 # Lifespan 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alerts_cache, fires_cache
+    global alerts_cache, fires_cache, db_pool
     print("Cargando geometria de Espana...")
     await load_spain_geometry()
- 
-    # Verificar que el GeoJSON de landcover existe
-    if not os.path.exists('data/landcover.geojson'):
-        print("  AVISO: data/landcover.geojson no encontrado.")
-        print("  Ejecuta primero: python generar_landcover.py")
-    else:
-        size_mb = os.path.getsize('data/landcover.geojson') / 1024 / 1024
-        print(f"  CORINE landcover.geojson listo ({size_mb:.1f} MB)")
+
+    print("Inicializando PostgreSQL/PostGIS...")
+    db_pool = ConnectionPool(conninfo=postgres_conninfo(), min_size=1, max_size=4, open=False)
+    try:
+        db_pool.open()
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM pub.landcover_filtered")
+                landcover_count = cur.fetchone()[0]
+        print(f"  CORINE pub.landcover_filtered listo ({landcover_count} clases publicadas)")
+    except Exception:
+        if db_pool is not None:
+            db_pool.close()
+            db_pool = None
+        raise
  
     print("Cargando datos de AEMET...")
     alerts_cache = await fetch_aemet_alerts()
-    print(f"  → {len(alerts_cache)} avisos cargados")
+    if settings.aemet_api_key:
+        print(f"  → {len(alerts_cache)} avisos cargados")
+    else:
+        print("  AEMET_API_KEY no configurada; /api/alerts devolvera lista vacia")
     fires_cache = []
     print("NASA FIRMS se consultara en vivo al cargar el visor")
     yield
+    if db_pool is not None:
+        db_pool.close()
+        db_pool = None
  
 
 # App 
@@ -400,11 +729,62 @@ def get_stats():
  
 @app.get("/api/landcover")
 def get_landcover():
-    """Cobertura forestal filtrada de CORINE Land Cover 2018 (IGN/CNIG)."""
-    path = 'data/landcover.geojson'
-    if not os.path.exists(path):
-        return {"type": "FeatureCollection", "features": [], "error": "Ejecuta generar_landcover.py"}
-    return FileResponse(path, media_type='application/geo+json')
+    """Cobertura forestal filtrada publicada desde PostGIS."""
+    try:
+        data = fetch_landcover_feature_collection()
+        headers = build_landcover_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando landcover en PostGIS: {exc}") from exc
+    return JSONResponse(
+        content=data,
+        headers=headers,
+        media_type="application/geo+json",
+    )
+
+@app.get("/api/layers/landcover")
+def get_landcover_layer_metadata():
+    """Metadatos básicos de la capa landcover publicada."""
+    try:
+        data = fetch_landcover_layer_metadata()
+        headers = build_landcover_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando metadata de landcover: {exc}") from exc
+    return JSONResponse(content=data, headers=headers)
+
+@app.get("/api/landcover/features")
+def get_landcover_features(
+    bbox: str = Query(..., description="BBox en EPSG:4326 con formato minx,miny,maxx,maxy"),
+    zoom: int = Query(6, ge=0, le=22, description="Zoom del mapa Leaflet para ajustar el nivel de detalle"),
+    width: int = Query(1024, ge=1, le=10000, description="Ancho del viewport en pixeles"),
+    height: int = Query(768, ge=1, le=10000, description="Alto del viewport en pixeles"),
+    limit: int = Query(1000, ge=1, le=5000, description="Maximo de features devueltas por peticion"),
+):
+    """Features de detalle en core.landcover_polygon filtradas por bbox."""
+    try:
+        coords = [float(value) for value in bbox.split(",")]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="bbox debe contener cuatro numeros") from exc
+    if len(coords) != 4:
+        raise HTTPException(status_code=400, detail="bbox debe tener formato minx,miny,maxx,maxy")
+    minx, miny, maxx, maxy = coords
+    if minx >= maxx or miny >= maxy:
+        raise HTTPException(status_code=400, detail="bbox invalido: min debe ser menor que max")
+    try:
+        data = fetch_landcover_features_by_bbox(minx, miny, maxx, maxy, zoom, width, height, limit)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando features landcover: {exc}") from exc
+    return JSONResponse(content=data, media_type="application/geo+json")
+
+@app.get("/api/landcover/features/{feature_id}")
+def get_landcover_feature(feature_id: int):
+    """Detalle de una feature individual desde core.landcover_polygon."""
+    try:
+        data = fetch_landcover_feature_detail(feature_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando feature landcover: {exc}") from exc
+    if data is None:
+        raise HTTPException(status_code=404, detail="Feature landcover no encontrada")
+    return JSONResponse(content=data, media_type="application/geo+json")
 
 @app.get("/api/boundaries/spain")
 def get_spain_boundary():

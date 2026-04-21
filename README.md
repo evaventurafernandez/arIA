@@ -8,7 +8,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 - Focos de incendio de NASA FIRMS, filtrados para España y clasificados por FRP.
 - Mapa interactivo con Leaflet, filtros por nivel y tipo de aviso, timeline y listado lateral.
 - Capas WMS externas de EFFIS/Copernicus, inundaciones y CORINE Land Cover.
-- Capa local `data/landcover.geojson` con usos forestales y agrícolas filtrados de CORINE 2018.
+- Capa CORINE 2018 filtrada servida desde `PostgreSQL + PostGIS` a partir de `pub.landcover_filtered`.
 - Script auxiliar para generar `data/nucleos.geojson` con núcleos de población del IGN.
 - Script auxiliar para generar `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson` con focos activos EFFIS/Copernicus vectorizados desde teselas WMTS.
 
@@ -19,7 +19,8 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 |-- main.py                  # API FastAPI y servidor del frontend
 |-- frontend/                # HTML, CSS y JavaScript del mapa
 |-- data/                    # Datos GeoJSON locales generados
-|-- generar_landcover.py     # Genera data/landcover.geojson desde CORINE
+|-- generar_landcover.py     # Flujo histórico basado en fichero, mantenido como referencia
+|-- infra/                   # Infraestructura Docker, SQL e ingesta PostGIS
 |-- generar_nucleos.py       # Descarga y genera data/nucleos.geojson desde IGN
 |-- generar_effis_wfs.py     # Genera una capa vectorial local desde EFFIS/Copernicus
 |-- requirements.txt         # Dependencias Python principales
@@ -30,11 +31,14 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 
 - Python 3.10 o superior.
 - Una clave de AEMET OpenData.
+- Docker Compose para levantar PostgreSQL/PostGIS.
 - Opcionalmente, una clave de NASA FIRMS para cargar focos de incendio.
 
 Instala las dependencias principales:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -47,19 +51,32 @@ Crea un fichero `.env` en la raíz del proyecto con estas variables:
 ```env
 AEMET_API_KEY=tu_clave_de_aemet
 FIRMS_MAP_KEY=tu_clave_de_firms
+POSTGRES_HOST=127.0.0.1
+POSTGRES_DB=meteovisor
+POSTGRES_USER=meteovisor
+POSTGRES_PASSWORD=meteovisor
+POSTGRES_PORT=5432
 ```
 
 `FIRMS_MAP_KEY` es opcional. Si no se informa, la API devolverá una lista vacía de focos de incendio.
 
-## Preparar datos locales
+## Preparar datos
 
-El backend espera encontrar `data/landcover.geojson` para servir la capa CORINE filtrada:
+Para la PoC actual, la capa landcover ya no se sirve desde un fichero local. El backend consulta `pub.landcover_filtered` en PostGIS. Levanta antes la base de datos:
 
 ```bash
-python generar_landcover.py
+docker compose up -d postgres
 ```
 
-Este script requiere tener disponible el fichero fuente `data/CLC2018_ES.gpkg` con las capas `CLC18_ES` y `CLC18_ES_Canarias`.
+Si necesitas rehacer la ingesta completa de landcover desde el `FileGDB` real:
+
+```bash
+python infra/ingest/import_landcover_source.py
+docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_core.sql
+docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_pub.sql
+```
+
+El detalle del pipeline está en [doc/arquitectura/poc_landcover_end_to_end.md](/home/jose/tfg-eva/meteovisor-demo/doc/arquitectura/poc_landcover_end_to_end.md).
 
 Para generar núcleos de población desde la API-Features del IGN:
 
@@ -112,7 +129,10 @@ http://127.0.0.1:8000
 - `GET /api/alerts`: avisos meteorológicos cargados desde AEMET.
 - `GET /api/fires`: focos de incendio recientes cargados en vivo desde NASA FIRMS al abrir o recargar el visor.
 - `GET /api/stats`: resumen básico de avisos y focos por nivel.
-- `GET /api/landcover`: GeoJSON local de CORINE filtrado.
+- `GET /api/landcover`: `FeatureCollection` GeoJSON agregado desde `pub.landcover_filtered`.
+- `GET /api/layers/landcover`: metadatos de la capa publicada.
+- `GET /api/landcover/features?bbox=minx,miny,maxx,maxy`: detalle espacial desde `core.landcover_polygon`.
+- `GET /api/landcover/features/{id}`: detalle GeoJSON de una feature individual de `core.landcover_polygon`.
 - `GET /api/effis/wmts`: GeoJSON local de focos EFFIS/Copernicus vectorizados.
 
 El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
@@ -122,4 +142,5 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 - Al iniciar la aplicación, se carga `data/boundaries/spain_nuts_2024_01m.geojson` para filtrar detecciones de FIRMS por punto en MultiPolygon. Este GeoJSON local procede de GISCO/NUTS 2024 y cubre Península, Baleares, Canarias, Ceuta y Melilla.
 - La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon.
 - Los avisos de AEMET se cargan en memoria durante el arranque. Los focos NASA FIRMS se piden al backend cada vez que el visor se carga o recarga.
+- La capa `landcover` se valida en arranque abriendo un pool PostgreSQL y comprobando acceso a `pub.landcover_filtered`.
 - Las capas WMS se consultan desde servicios externos, por lo que su disponibilidad depende de esos proveedores.

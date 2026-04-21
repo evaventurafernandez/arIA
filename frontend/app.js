@@ -427,8 +427,12 @@ function updateLegend() {
  
 // CORINE (GeoJSON filtrado desde backend) 
 let corineLayer   = null;   // L.geoJSON instance
-let corineLoaded  = false;  // evitar recargar
 let corineVisible = false;
+let corineAbortController = null;
+let corineRefreshTimer = null;
+let corineRequestSeq = 0;
+const CORINE_REFRESH_DELAY_MS = 250;
+const CORINE_DEFAULT_LIMIT = 1200;
  
 const CORINE_LEGEND = {
   title: 'Usos del suelo (filtrado)',
@@ -445,38 +449,86 @@ const CORINE_LEGEND = {
   note: 'CORINE Land Cover 2018 - IGN/CNIG - usos forestales y agrícolas'
 };
  
+function getCorineRequestUrl() {
+  const bounds = map.getBounds();
+  const size = map.getSize();
+  const bbox = [
+    bounds.getWest(),
+    bounds.getSouth(),
+    bounds.getEast(),
+    bounds.getNorth(),
+  ].map(value => value.toFixed(6)).join(',');
+  const params = new URLSearchParams({
+    bbox,
+    zoom: String(map.getZoom()),
+    width: String(size.x),
+    height: String(size.y),
+    limit: String(CORINE_DEFAULT_LIMIT),
+  });
+  return `/api/landcover/features?${params.toString()}`;
+}
+
+function buildCorineLayer(data) {
+  return L.geoJSON(data, {
+    style: f => ({
+      color:       f.properties.color,
+      fillColor:   f.properties.color,
+      fillOpacity: 0.55,
+      weight:      0.3,
+      opacity:     0.5,
+    }),
+    onEachFeature: (f, layer) => {
+      layer.bindTooltip(f.properties.label, { sticky: true });
+    },
+  });
+}
+
 async function loadCorineLayer() {
-  if (corineLoaded) return;
-  corineLoaded = true;
+  const requestSeq = ++corineRequestSeq;
+  if (corineAbortController) corineAbortController.abort();
+  corineAbortController = new AbortController();
   try {
-    const data = await fetch('/api/landcover').then(r => r.json());
-    corineLayer = L.geoJSON(data, {
-      style: f => ({
-        color:       f.properties.color,
-        fillColor:   f.properties.color,
-        fillOpacity: 0.55,
-        weight:      0.3,
-        opacity:     0.5,
-      }),
-      onEachFeature: (f, layer) => {
-        layer.bindTooltip(f.properties.label, { sticky: true });
-      },
-      minZoom: 8,
+    const response = await fetch(getCorineRequestUrl(), {
+      signal: corineAbortController.signal,
+      cache: 'no-store',
     });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (requestSeq !== corineRequestSeq) return;
+    const nextLayer = buildCorineLayer(data);
+    if (corineLayer) map.removeLayer(corineLayer);
+    corineLayer = nextLayer;
     if (corineVisible) corineLayer.addTo(map);
     updateLegend();
   } catch(e) {
+    if (e.name === 'AbortError') return;
     console.error('Error cargando CORINE:', e);
-    corineLoaded = false;
   }
+}
+
+function scheduleCorineRefresh() {
+  if (!corineVisible) return;
+  if (corineRefreshTimer) clearTimeout(corineRefreshTimer);
+  corineRefreshTimer = setTimeout(() => {
+    corineRefreshTimer = null;
+    loadCorineLayer();
+  }, CORINE_REFRESH_DELAY_MS);
 }
  
 function toggleCorine(enabled) {
   corineVisible = enabled;
   if (enabled) {
-    loadCorineLayer();  // carga solo la primera vez
+    scheduleCorineRefresh();
     if (corineLayer) corineLayer.addTo(map);
   } else {
+    if (corineRefreshTimer) {
+      clearTimeout(corineRefreshTimer);
+      corineRefreshTimer = null;
+    }
+    if (corineAbortController) {
+      corineAbortController.abort();
+      corineAbortController = null;
+    }
     if (corineLayer) map.removeLayer(corineLayer);
   }
   updateLegend();
@@ -952,6 +1004,9 @@ function fmtDate(iso) {
 // Listeners WMS y capas de datos 
 const chkCorine = document.getElementById('chk-corine');
 if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
+map.on('moveend zoomend', () => {
+  if (corineVisible) scheduleCorineRefresh();
+});
  
 ['effis_fires','flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
