@@ -5,7 +5,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 ## Qué incluye
 
 - Avisos meteorológicos activos de AEMET, obtenidos desde AEMET OpenData y parseados desde CAP XML.
-- Focos de incendio de NASA FIRMS, filtrados para España y clasificados por FRP.
+- Focos de incendio de NASA FIRMS, filtrados para España y confianza nominal/alta, con intensidad visual por FRP.
 - Mapa interactivo con Leaflet, filtros por nivel y tipo de aviso, timeline y listado lateral.
 - Capas WMS externas de EFFIS/Copernicus, inundaciones y CORINE Land Cover.
 - Capa local `data/landcover.geojson` con usos forestales y agrícolas filtrados de CORINE 2018.
@@ -120,6 +120,7 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 ## Notas
 
 - Al iniciar la aplicación, se carga `data/boundaries/spain_nuts_2024_01m.geojson` para filtrar detecciones de FIRMS por punto en MultiPolygon. Este GeoJSON local procede de GISCO/NUTS 2024 y cubre Península, Baleares, Canarias, Ceuta y Melilla.
-- La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon.
+- La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon y se conservan sólo detecciones `confidence` nominal/alta (`n`/`h`).
+- La simbología FIRMS usa `frp` como potencia radiativa del foco en MW mediante categorías visuales de intensidad: 0-5, 5-20, 20-75 y >75 MW. No son umbrales oficiales NASA de gravedad.
 - Los avisos de AEMET se cargan en memoria durante el arranque. Los focos NASA FIRMS se piden al backend cada vez que el visor se carga o recarga.
 - Las capas WMS se consultan desde servicios externos, por lo que su disponibilidad depende de esos proveedores.
