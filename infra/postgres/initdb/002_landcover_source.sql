@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS source.landcover_clc18_es (
     source_fid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_objectid bigint NOT NULL,
     ingest_id bigint NOT NULL REFERENCES ingest.ingest_file(ingest_id),
-    code_18 text NOT NULL CHECK (code_18 IN ('311', '312', '313', '321', '322', '323', '324', '211', '242')),
+    code_18 text NOT NULL CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324')),
     imported_at timestamptz NOT NULL DEFAULT now(),
     geom geometry(Geometry, 4326) NOT NULL
 );
@@ -35,22 +35,46 @@ CREATE TABLE IF NOT EXISTS source.landcover_clc18_es_canarias (
     source_fid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_objectid bigint NOT NULL,
     ingest_id bigint NOT NULL REFERENCES ingest.ingest_file(ingest_id),
-    code_18 text NOT NULL CHECK (code_18 IN ('311', '312', '313', '321', '322', '323', '324', '211', '242')),
+    code_18 text NOT NULL CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324')),
     imported_at timestamptz NOT NULL DEFAULT now(),
     geom geometry(Geometry, 4326) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS staging.landcover_clc18_es_raw (
     source_objectid bigint NOT NULL,
-    code_18 text NOT NULL CHECK (code_18 IN ('311', '312', '313', '321', '322', '323', '324', '211', '242')),
+    code_18 text NOT NULL CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324')),
     geom geometry(Geometry, 4326) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS staging.landcover_clc18_es_canarias_raw (
     source_objectid bigint NOT NULL,
-    code_18 text NOT NULL CHECK (code_18 IN ('311', '312', '313', '321', '322', '323', '324', '211', '242')),
+    code_18 text NOT NULL CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324')),
     geom geometry(Geometry, 4326) NOT NULL
 );
+
+ALTER TABLE source.landcover_clc18_es
+    DROP CONSTRAINT IF EXISTS landcover_clc18_es_code_18_check;
+ALTER TABLE source.landcover_clc18_es
+    ADD CONSTRAINT landcover_clc18_es_code_18_check
+    CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324'));
+
+ALTER TABLE source.landcover_clc18_es_canarias
+    DROP CONSTRAINT IF EXISTS landcover_clc18_es_canarias_code_18_check;
+ALTER TABLE source.landcover_clc18_es_canarias
+    ADD CONSTRAINT landcover_clc18_es_canarias_code_18_check
+    CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324'));
+
+ALTER TABLE staging.landcover_clc18_es_raw
+    DROP CONSTRAINT IF EXISTS landcover_clc18_es_raw_code_18_check;
+ALTER TABLE staging.landcover_clc18_es_raw
+    ADD CONSTRAINT landcover_clc18_es_raw_code_18_check
+    CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324'));
+
+ALTER TABLE staging.landcover_clc18_es_canarias_raw
+    DROP CONSTRAINT IF EXISTS landcover_clc18_es_canarias_raw_code_18_check;
+ALTER TABLE staging.landcover_clc18_es_canarias_raw
+    ADD CONSTRAINT landcover_clc18_es_canarias_raw_code_18_check
+    CHECK (code_18 IN ('111', '112', '121', '211', '242', '311', '312', '313', '321', '322', '323', '324'));
 
 CREATE INDEX IF NOT EXISTS landcover_clc18_es_geom_gix
     ON source.landcover_clc18_es USING GIST (geom);

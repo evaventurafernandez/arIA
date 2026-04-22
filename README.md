@@ -19,7 +19,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 |-- main.py                  # API FastAPI y servidor del frontend
 |-- frontend/                # HTML, CSS y JavaScript del mapa
 |-- data/                    # Datos GeoJSON locales generados
-|-- generar_landcover.py     # Flujo histórico basado en fichero, mantenido como referencia
+|-- generar_landcover.py     # Utilidad auxiliar fuera del flujo actual de ingesta
 |-- infra/                   # Infraestructura Docker, SQL e ingesta PostGIS
 |-- generar_nucleos.py       # Descarga y genera data/nucleos.geojson desde IGN
 |-- generar_effis_wfs.py     # Genera una capa vectorial local desde EFFIS/Copernicus
@@ -62,10 +62,13 @@ POSTGRES_PORT=5432
 
 ## Preparar datos
 
-Para la PoC actual, la capa landcover ya no se sirve desde un fichero local. El backend:
+La capa `landcover` se publica actualmente desde PostGIS. El backend:
 
 - mantiene `pub.landcover_filtered` como publicación GeoJSON agregada de compatibilidad;
-- y usa `pub.landcover_mvt_source` como publicación principal para `vector tiles (MVT)`.
+- usa `pub.landcover_mvt_source` como fuente MVT detallada por feature;
+- y usa `pub.landcover_mvt_class_source` como fuente MVT agregada por clase para bajo zoom.
+
+Los comandos siguientes asumen la configuración por defecto del proyecto (`POSTGRES_DB=meteovisor`, `POSTGRES_USER=meteovisor`). Si has cambiado esos valores en `.env`, sustitúyelos también aquí.
 
 Levanta antes la base de datos:
 
@@ -73,23 +76,25 @@ Levanta antes la base de datos:
 docker compose up -d postgres
 ```
 
-Si la base ya existía antes de la fase MVT, aplica el SQL nuevo y refresca la vista materializada de tiles:
+Si la base ya existía y necesitas asegurar o actualizar las publicaciones MVT:
 
 ```bash
-docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/postgres/initdb/005_landcover_mvt.sql
-docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_mvt.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/005_landcover_mvt.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
 ```
 
 Si necesitas rehacer la ingesta completa de landcover desde el `FileGDB` real:
 
 ```bash
-python infra/ingest/import_landcover_source.py
-docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_core.sql
-docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_pub.sql
-docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_mvt.sql
+docker compose run --rm gdal python3 /work/infra/ingest/import_landcover_source.py
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_pub.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
 ```
 
-El detalle del pipeline está en [doc/arquitectura/poc_landcover_end_to_end.md](/home/jose/tfg-eva/meteovisor-demo/doc/arquitectura/poc_landcover_end_to_end.md).
+`import_landcover_source.py` solo deja datos en `source`; la capa no aparece en el visor hasta reconstruir `core` y refrescar `pub.landcover_filtered`, `pub.landcover_mvt_source` y `pub.landcover_mvt_class_source`.
+
+La guía completa de primera carga, validaciones y recargas está en [infra/ingest/README.md](infra/ingest/README.md).
 
 Para generar núcleos de población desde la API-Features del IGN:
 
@@ -156,6 +161,6 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 - Al iniciar la aplicación, se carga `data/boundaries/spain_nuts_2024_01m.geojson` para filtrar detecciones de FIRMS por punto en MultiPolygon. Este GeoJSON local procede de GISCO/NUTS 2024 y cubre Península, Baleares, Canarias, Ceuta y Melilla.
 - La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon.
 - Los avisos de AEMET se cargan en memoria durante el arranque. Los focos NASA FIRMS se piden al backend cada vez que el visor se carga o recarga.
-- La capa `landcover` se valida en arranque abriendo un pool PostgreSQL y comprobando acceso a `pub.landcover_filtered` y `pub.landcover_mvt_source`.
-- El visor renderiza `landcover` con `Leaflet.VectorGrid` sobre teselas `MVT` servidas por FastAPI desde PostGIS.
+- La capa `landcover` se valida en arranque comprobando acceso a `pub.landcover_filtered`, `pub.landcover_mvt_source` y, si existe, `pub.landcover_mvt_class_source`.
+- El visor renderiza `landcover` con `Leaflet.VectorGrid` sobre teselas `MVT` servidas por FastAPI desde PostGIS, usando `pub.landcover_mvt_class_source` hasta `z=8` y `pub.landcover_mvt_source` a partir de `z=9`.
 - Las capas WMS se consultan desde servicios externos, por lo que su disponibilidad depende de esos proveedores.

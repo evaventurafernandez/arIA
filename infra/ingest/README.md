@@ -1,125 +1,184 @@
-# Ingesta `landcover`
+# Carga actual de `landcover`
 
-Fases 4b y 5 de la PoC: carga completa eficiente desde un `FileGDB` empaquetado en ZIP a PostGIS usando GDAL desde Python con flujo `ZIP -> GDB extraido -> staging -> source`, y normalizacion posterior desde `source` a `core`.
+Esta guía describe el flujo vigente para cargar y publicar `landcover` en PostgreSQL/PostGIS a partir del `FileGDB` de CORINE.
 
-## Piezas
+## Resultado final de la carga
 
-- `import_landcover_source.py`: descomprime el `FileGDB` a una ruta canónica, hace la carga bulk a `staging` con `osgeo.gdal` y consolida `source` con SQL.
-- `docker-compose.yml`: añade el servicio `gdal` con una imagen oficial de GDAL con bindings de Python.
-- `infra/postgres/initdb/002_landcover_source.sql`: crea `ingest.ingest_file`, las tablas `staging`, las tablas `source` y la vista unificada.
-- `infra/postgres/initdb/003_landcover_core.sql`: crea el catalogo semantico de clases y la tabla canonica `core.landcover_polygon`.
-- `infra/postgres/initdb/004_landcover_pub.sql`: crea `pub.landcover_filtered` como vista materializada derivada para explotacion.
-- `infra/postgres/initdb/005_landcover_mvt.sql`: crea `pub.landcover_mvt_source` como vista materializada derivada para vector tiles MVT.
-- `refresh_landcover_core.sql`: reconstruye `core` desde `source` reparando y canonizando geometria.
-- `refresh_landcover_pub.sql`: refresca `pub` desde `core` reproduciendo la simplificacion y el dissolve del flujo historico.
-- `refresh_landcover_mvt.sql`: refresca `pub.landcover_mvt_source` reproyectando a `EPSG:3857` la publicacion por feature para teselas vectoriales.
+Una ejecución completa deja actualizados estos niveles:
 
-## Origen actual de la fase
+- `source.landcover_clc18_es`
+- `source.landcover_clc18_es_canarias`
+- `source.landcover_corine_polygon`
+- `core.landcover_polygon`
+- `pub.landcover_filtered`
+- `pub.landcover_mvt_source`
+- `pub.landcover_mvt_class_source`
 
-La subfase 4b usa por defecto este artefacto bruto:
+Uso actual de cada publicación:
+
+- `pub.landcover_filtered`: salida GeoJSON agregada de compatibilidad.
+- `pub.landcover_mvt_source`: fuente MVT detallada por feature para zoom medio y alto.
+- `pub.landcover_mvt_class_source`: fuente MVT agregada por clase para bajo zoom (`z <= 8`).
+
+## Flujo vigente
+
+El pipeline actual es:
+
+```text
+CLC2018_GDB.zip
+  -> extracción canónica del FileGDB
+  -> staging
+  -> source
+  -> core
+  -> pub.landcover_filtered
+  -> pub.landcover_mvt_source + pub.landcover_mvt_class_source
+```
+
+## Artefactos y scripts
+
+- `import_landcover_source.py`: descomprime el `FileGDB`, carga a `staging` con GDAL y consolida `source`.
+- `refresh_landcover_core.sql`: reconstruye `core` desde `source`.
+- `refresh_landcover_pub.sql`: refresca `pub.landcover_filtered`.
+- `refresh_landcover_mvt.sql`: refresca `pub.landcover_mvt_source` y `pub.landcover_mvt_class_source`.
+- `verify_landcover_source.sql`: comprobaciones de `source`.
+- `verify_landcover_core.sql`: comprobaciones de `core`.
+- `verify_landcover_pub.sql`: comprobaciones de `pub.landcover_filtered`.
+- `verify_landcover_mvt.sql`: comprobaciones de las dos publicaciones MVT.
+
+## Origen de entrada
+
+Por defecto se usa este ZIP bruto:
 
 ```text
 ./data-store/files/CLC2018_GDB.zip
 ```
 
-Durante la carga eficiente, el proceso lo descomprime una vez a esta ruta canónica:
+Durante la carga se extrae, si hace falta, a esta ruta canónica:
 
 ```text
 ./data-store/files/raw/copernicus/corine/landcover_corine_2018_filtered/2018/CLC2018_ES.gdb
 ```
 
-Si el `FileGDB` ya existe extraido y el ZIP no ha cambiado, el proceso reutiliza esa extracción.
+Si el `FileGDB` ya está extraído y el ZIP no ha cambiado, la extracción se reutiliza.
 
-## Ejecución
+## Primera carga
 
-1. Arrancar PostgreSQL/PostGIS:
+Los comandos siguientes asumen la configuración por defecto del proyecto:
+
+- base: `meteovisor`
+- usuario: `meteovisor`
+- servicio: `postgres`
+
+Si has cambiado `POSTGRES_DB` o `POSTGRES_USER` en `.env`, sustituye esos valores en los comandos.
+
+1. Arranca PostgreSQL/PostGIS:
 
    ```bash
    docker compose up -d postgres
    ```
 
-2. Si la base ya existía antes de añadir el SQL de esta fase, aplicar el bootstrap actualizado:
+2. Si la base es nueva, el bootstrap SQL se aplica automáticamente al arrancar el contenedor.
+
+   Si reutilizas una base ya existente y necesitas asegurar las estructuras, ejecuta:
 
    ```bash
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/002_landcover_source.sql
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/003_landcover_core.sql
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/004_landcover_pub.sql
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -f /docker-entrypoint-initdb.d/005_landcover_mvt.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/002_landcover_source.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/003_landcover_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/004_landcover_pub.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/005_landcover_mvt.sql
    ```
 
-3. Ejecutar la importación completa eficiente:
+3. Carga `source` con el contenedor `gdal`:
 
    ```bash
    docker compose run --rm gdal python3 /work/infra/ingest/import_landcover_source.py
    ```
 
-4. Validación rápida opcional con muestra pequeña:
+4. Reconstruye `core`:
 
    ```bash
-   docker compose run --rm -e MAX_FEATURES_PER_LAYER=100 gdal python3 /work/infra/ingest/import_landcover_source.py
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_core.sql
    ```
 
-5. Verificar el resultado:
+5. Refresca la publicación agregada:
 
    ```bash
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -c "\dt source.*"
-   docker compose exec postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} -c "SELECT source_layer, count(*) FROM source.landcover_corine_polygon GROUP BY 1 ORDER BY 1;"
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_pub.sql
    ```
 
-6. Reconstruir `core` desde `source`:
+6. Refresca las publicaciones MVT:
 
    ```bash
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
    ```
 
-7. Verificar `core`:
+## Recarga normal
 
-   ```bash
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/verify_landcover_core.sql
-   ```
+Si el esquema ya existe y solo quieres volver a cargar el dataset o aplicar un cambio en el filtro:
 
-8. Reconstruir `pub` desde `core`:
+```bash
+docker compose run --rm gdal python3 /work/infra/ingest/import_landcover_source.py
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_pub.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
+```
 
-   ```bash
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_pub.sql
-   ```
+## Verificación rápida
 
-9. Verificar `pub`:
+Para comprobar que la carga ha llegado a todos los niveles:
 
-   ```bash
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/verify_landcover_pub.sql
-   ```
+```bash
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -c "SELECT 'source' AS stage, count(*) AS total FROM source.landcover_corine_polygon UNION ALL SELECT 'core', count(*) FROM core.landcover_polygon UNION ALL SELECT 'pub', count(*) FROM pub.landcover_filtered UNION ALL SELECT 'mvt_detail', count(*) FROM pub.landcover_mvt_source UNION ALL SELECT 'mvt_overview', count(*) FROM pub.landcover_mvt_class_source;"
+```
 
-10. Refrescar y verificar la publicación MVT:
+Resultado esperado en una carga completa:
 
-   ```bash
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/refresh_landcover_mvt.sql
-   docker compose exec -T postgres psql -U ${POSTGRES_USER:-meteovisor} -d ${POSTGRES_DB:-meteovisor} < infra/ingest/verify_landcover_mvt.sql
-   ```
+- `source` > 0
+- `core` > 0
+- `pub` > 0
+- `mvt_detail` > 0
+- `mvt_overview` > 0
+
+## Verificación completa
+
+Si necesitas validación detallada:
+
+```bash
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/verify_landcover_source.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/verify_landcover_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/verify_landcover_pub.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/verify_landcover_mvt.sql
+```
+
+## Validación rápida con muestra
+
+Para una prueba de humo puedes limitar la importación:
+
+```bash
+docker compose run --rm -e MAX_FEATURES_PER_LAYER=100 gdal python3 /work/infra/ingest/import_landcover_source.py
+```
+
+Úsalo solo sobre una base de prueba o justo antes de repetir la carga completa, porque con `TRUNCATE_SOURCE=1` dejará `source` con una muestra parcial.
 
 ## Variables útiles
 
 - `RAW_ZIP`: ZIP de entrada. Por defecto `./data-store/files/CLC2018_GDB.zip`.
 - `EXTRACTED_GDB_DIR`: ruta canónica del `FileGDB` descomprimido.
 - `WHERE_CLAUSE`: filtro funcional por `CODE_18`.
-- `MAX_FEATURES_PER_LAYER`: límite de features por capa para validación rápida. `0` significa sin límite.
+- `MAX_FEATURES_PER_LAYER`: límite de features por capa para pruebas rápidas. `0` significa sin límite.
 - `TRUNCATE_STAGING`: limpia `staging` antes de recargar. Por defecto `1`.
 - `TRUNCATE_SOURCE`: limpia `source` antes de recargar. Por defecto `1`.
 - `OGR_ORGANIZE_POLYGONS`: estrategia de GDAL para polígonos complejos. Por defecto `SKIP`.
 
-## Notas
+## Notas operativas
 
-- El filtrado funcional se hace antes de persistir en PostGIS.
-- La carga masiva entra primero en `staging` y solo después se consolida a `source`.
-- `core` no hace `dissolve`; conserva una fila por geometria de `source` y normaliza solo la semantica y la geometria canonica.
-- `pub.landcover_filtered` es una vista materializada y no una vista simple porque el dissolve y la simplificacion deben ejecutarse en batch, no por peticion.
-- `pub.landcover_filtered` reproduce el flujo historico: simplificacion por feature con tolerancia `0.005`, dissolve por clase y payload minimo con `feature_id`, `class_code`, `class_label`, `class_color`, `theme` y `geom`.
-- `pub.landcover_mvt_source` es una vista materializada distinta: una fila por feature, `EPSG:3857`, pensada para `vector tiles (MVT)` servidos desde FastAPI.
-- La ejecución es portable: el mismo comando `docker compose run` sirve en Linux y en Windows con Docker Desktop.
-- La importación usa GDAL desde Python, sin wrappers de shell como pieza principal.
+- `import_landcover_source.py` solo carga `source`; no publica automáticamente `core` ni `pub`.
+- `docker compose exec ... -f /ruta/al.sql` se usa para que los comandos funcionen igual en Bash y en PowerShell.
 - La carga bulk usa el driver PostgreSQL de GDAL con `PG_USE_COPY=YES`.
-- El valor por defecto `OGR_ORGANIZE_POLYGONS=SKIP` prioriza rendimiento en la carga completa. Eso puede aumentar el numero de geometrías inválidas en `source`; la reparación se reserva para `core`.
-- En `source`, `source_fid` es un identificador técnico generado en PostGIS y `source_objectid` conserva el `OBJECTID` original del `FileGDB`.
-- Cada carga crea su registro en `ingest.ingest_file` con `status`, hash, ruta y metadatos de trazabilidad.
-- `source` puede conservar geometrías no canónicas, incluyendo `MultiSurface` o geometrías inválidas; la canonización y reparación se reservan para `core`.
-- En `core`, las geometrías `MultiSurface` se linealizan con `ST_CurveToLine`, las geometrías no canónicas se reparan con `ST_Buffer(geom, 0)` y el resultado se canoniza a `MultiPolygon` en `EPSG:4326`.
+- El subconjunto actual de `CODE_18` en `source` es `111`, `112`, `121`, `211`, `242`, `311`, `312`, `313`, `321`, `322`, `323`, `324`.
+- En `core`, `pub.landcover_filtered`, `pub.landcover_mvt_source` y `pub.landcover_mvt_class_source`, los códigos de origen `111` y `112` se agrupan bajo el código canónico `1001` con la etiqueta `Tejido urbano`.
+- Los códigos canónicos publicados actualmente son `1001`, `121`, `211`, `242`, `311`, `312`, `313`, `321`, `322`, `323`, `324`.
+- Si amplías o reduces el subconjunto de origen o cambias una agrupación canónica, sincroniza `CODE_FILTER` en `import_landcover_source.py`, las `CHECK` de `002_landcover_source.sql`, el catálogo `core.landcover_class` de `003_landcover_core.sql` y el mapeo de `refresh_landcover_core.sql` antes de volver a cargar.
+- `source` conserva trazabilidad cercana al origen; la canonización geométrica se resuelve en `core`.
+- `core` mantiene una fila por feature y `pub.landcover_filtered` agrega por clase.
+- `pub.landcover_mvt_class_source` se usa en el visor hasta `z=8` y `pub.landcover_mvt_source` a partir de `z=9`.

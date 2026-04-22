@@ -73,4 +73,7 @@ SELECT
     ne.geom
 FROM non_empty AS ne
 JOIN core.landcover_class AS lc
-  ON lc.class_code = ne.code_18;
+  ON lc.class_code = CASE
+      WHEN ne.code_18 IN ('111', '112') THEN '1001'
+      ELSE ne.code_18
+  END;

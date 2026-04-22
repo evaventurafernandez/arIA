@@ -52,7 +52,7 @@ CREATE INDEX landcover_filtered_geom_gix
 
 COMMENT ON MATERIALIZED VIEW pub.landcover_filtered IS 'Publicacion derivada de landcover equivalente al flujo historico: simplificacion por feature, dissolve por clase y payload minimo para explotacion';
 COMMENT ON COLUMN pub.landcover_filtered.feature_id IS 'Identificador estable de explotacion, una fila por clase publicada';
-COMMENT ON COLUMN pub.landcover_filtered.class_code IS 'Codigo CORINE publicado como identificador funcional de clase';
+COMMENT ON COLUMN pub.landcover_filtered.class_code IS 'Codigo canonico publicado como identificador funcional de clase';
 COMMENT ON COLUMN pub.landcover_filtered.class_label IS 'Etiqueta de explotacion publicada para la clase';
 COMMENT ON COLUMN pub.landcover_filtered.class_color IS 'Color de explotacion publicado para la clase';
 COMMENT ON COLUMN pub.landcover_filtered.theme IS 'Tema homogeneo heredado de core para filtrado funcional posterior';

@@ -6,6 +6,36 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 
 L.control.zoom({ position: 'topright' }).addTo(map);
 
+const visibleBboxEl = document.getElementById('visible-bbox');
+const pointerCoordEl = document.getElementById('pointer-coord');
+
+function formatCoord(value, digits = 4) {
+  return Number(value).toFixed(digits);
+}
+
+function updateVisibleBbox() {
+  if (!visibleBboxEl) return;
+  const bounds = map.getBounds();
+  const southWest = bounds.getSouthWest();
+  const northEast = bounds.getNorthEast();
+  visibleBboxEl.textContent =
+    `${formatCoord(southWest.lng)}, ${formatCoord(southWest.lat)} · ${formatCoord(northEast.lng)}, ${formatCoord(northEast.lat)}`;
+}
+
+function updatePointerCoord(latlng) {
+  if (!pointerCoordEl) return;
+  if (!latlng) {
+    pointerCoordEl.textContent = '--';
+    return;
+  }
+  pointerCoordEl.textContent = `${formatCoord(latlng.lat, 5)}, ${formatCoord(latlng.lng, 5)}`;
+}
+
+map.on('moveend zoomend', updateVisibleBbox);
+map.on('mousemove', e => updatePointerCoord(e.latlng));
+map.on('mouseout', () => updatePointerCoord(null));
+updateVisibleBbox();
+
 const resetBtn = L.control({ position: 'topright' });
 resetBtn.onAdd = () => {
   const btn = L.DomUtil.create('button', 'leaflet-bar leaflet-control');
@@ -432,6 +462,10 @@ let corineTooltip = null;
 const CORINE_VECTOR_TILE_URL = '/api/landcover/tiles/{z}/{x}/{y}.mvt';
 
 const CORINE_CLASSES = [
+  { code: '1001', color: '#e6004d', label: 'Tejido urbano' },
+  { code: '121', color: '#cc4df2', label: 'Zonas industriales o comerciales' },
+  { code: '211', color: '#ffffa8', label: 'Tierras de labor secano' },
+  { code: '242', color: '#e6e600', label: 'Mosaico de cultivos' },
   { code: '311', color: '#4ce600', label: 'Bosque de frondosas' },
   { code: '312', color: '#267300', label: 'Bosque de coníferas' },
   { code: '313', color: '#70a800', label: 'Bosque mixto' },
@@ -439,8 +473,6 @@ const CORINE_CLASSES = [
   { code: '322', color: '#a8a800', label: 'Brezales y matorrales' },
   { code: '323', color: '#d4a46a', label: 'Vegetación esclerófila' },
   { code: '324', color: '#c8c800', label: 'Matorral en transición' },
-  { code: '211', color: '#ffffa8', label: 'Cultivos en secano' },
-  { code: '242', color: '#e6e600', label: 'Mosaico de cultivos' },
 ];
 
 const CORINE_CLASS_INDEX = Object.fromEntries(CORINE_CLASSES.map(item => [item.code, item]));
@@ -448,7 +480,7 @@ const CORINE_CLASS_INDEX = Object.fromEntries(CORINE_CLASSES.map(item => [item.c
 const CORINE_LEGEND = {
   title: 'Usos del suelo (filtrado)',
   items: CORINE_CLASSES.map(item => ({ color: item.color, label: item.label })),
-  note: 'CORINE Land Cover 2018 - IGN/CNIG - usos forestales y agrícolas'
+  note: 'CORINE Land Cover 2018 - IGN/CNIG - selección filtrada de usos del suelo'
 };
  
 function getCorineFeatureStyle(properties) {
@@ -493,7 +525,9 @@ function buildCorineLayer() {
   const layer = L.vectorGrid.protobuf(CORINE_VECTOR_TILE_URL, {
     rendererFactory: L.canvas.tile,
     interactive: true,
-    maxNativeZoom: 14,
+    // El backend sirve MVT de detalle por feature también a zoom alto;
+    // limitarlo a z14 difumina o hace demasiado sutiles manchas pequeñas.
+    maxNativeZoom: 18,
     vectorTileLayerStyles: layerStyles,
     getFeatureId: feature => feature.properties.core_feature_id,
   });
@@ -513,7 +547,7 @@ function buildCorineLayer() {
     const label = props.class_label || props.label || 'Uso del suelo';
     L.popup()
       .setLatLng(e.latlng)
-      .setContent(`<b>${label}</b><br>Código CORINE: ${props.class_code || 'n/d'}`)
+      .setContent(`<b>${label}</b><br>Código canónico: ${props.class_code || 'n/d'}`)
       .openOn(map);
   });
   return layer;
@@ -550,6 +584,7 @@ let activeList   = 'alerts';
 let activeLevels = new Set(['Rojo','Naranja','Amarillo','Verde']);
 let activeEvent  = 'all';
 let firesError   = null;
+let firesLoading = false;
 
 // ── Timeline ──────────────────────────────────────────────────────────────
 let tlMin = null, tlMax = null, tlCurrent = null, playInterval = null;
@@ -662,6 +697,9 @@ function buildClientStats(alerts, fires) {
 }
 
 function updateStatsBar(stats) {
+  const fireLoadingNote = firesLoading
+    ? ' &nbsp;-&nbsp; <span style="color:#9db7ff">FIRMS: cargando...</span>'
+    : '';
   const fireNote = firesError
     ? ` &nbsp;-&nbsp; <span style="color:#ff7676">FIRMS: ${firesError}</span>`
     : '';
@@ -669,20 +707,40 @@ function updateStatsBar(stats) {
     `<b>${stats.alerts.total}</b> avisos AEMET &nbsp;-&nbsp; `+
     `<b>${stats.fires.total}</b> focos FIRMS &nbsp;-&nbsp; `+
     `FRP máx: <b>${stats.fires.frp_max.toFixed(1)} MW</b>`+
+    fireLoadingNote +
     fireNote;
+}
+
+async function loadFiresInBackground() {
+  firesLoading = true;
+  updateStatsBar(buildClientStats(alertsData, firesData));
+  if (activeList === 'fires') renderList();
+
+  try {
+    firesData = await fetchSpainHotspots();
+    firesError = null;
+  } catch (error) {
+    firesData = [];
+    firesError = error.message;
+  } finally {
+    firesLoading = false;
+    updateStatsBar(buildClientStats(alertsData, firesData));
+    renderFires();
+    renderList();
+  }
 }
 
 async function init() {
   document.getElementById('stats-bar').textContent = 'Cargando datos...';
   document.getElementById('main-list').innerHTML = '<div class="empty">Cargando...</div>';
-  const [alertsResult, firesResult] = await Promise.allSettled([
+  const [alertsResult] = await Promise.allSettled([
     fetchJson('/api/alerts'),
-    fetchSpainHotspots(),
   ]);
 
   alertsData = alertsResult.status === 'fulfilled' ? alertsResult.value : [];
-  firesError = firesResult.status === 'rejected' ? firesResult.reason.message : null;
-  firesData  = firesResult.status === 'fulfilled' ? firesResult.value : [];
+  firesData = [];
+  firesError = null;
+  firesLoading = true;
   const stats = buildClientStats(alertsData, firesData);
   updateStatsBar(stats);
 
@@ -693,6 +751,7 @@ async function init() {
   renderAlerts();
   renderFires();
   renderList();
+  void loadFiresInBackground();
 }
 
 // Filtrado
@@ -875,6 +934,10 @@ function renderList() {
   } else {
     title.textContent = 'Focos de incendio';
     updateListHeader(firesData);
+    if (firesLoading) {
+      el.innerHTML = '<div class="empty">Cargando focos FIRMS...</div>';
+      return;
+    }
     if (firesError) {
       el.innerHTML = `<div class="empty">No se pudieron cargar los focos FIRMS: ${escapeHtml(firesError)}</div>`;
       return;

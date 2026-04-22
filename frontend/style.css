@@ -6,10 +6,24 @@ header {
   display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid #2a2d3a; flex-shrink: 0; gap: 12px;
 }
-.header-left { display: flex; align-items: center; gap: 10px; }
+.header-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1; }
 header h1 { font-size: 16px; font-weight: 600; color: #fff; }
 .demo-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: #1e2235; color: #4a90d9; border: 1px solid #4a90d9; letter-spacing: .5px; }
-#stats-bar { font-size: 11px; color: #777; }
+#map-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.map-meta-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 24px; padding: 3px 8px;
+  border: 1px solid #2a2d3a; border-radius: 999px;
+  background: #0f1117; color: #bbb;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.map-meta-label {
+  color: #6f86a6; font-size: 10px; font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase;
+}
+#visible-bbox, #pointer-coord { color: #e0e6f0; }
+#stats-bar { font-size: 11px; color: #777; flex-shrink: 0; }
 #stats-bar b { color: #bbb; }
 
 .main { display: flex; flex: 1; overflow: hidden; }

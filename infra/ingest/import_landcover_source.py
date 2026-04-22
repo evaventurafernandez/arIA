@@ -13,7 +13,7 @@ from pathlib import Path
 
 from osgeo import gdal, ogr, osr
 
-CODE_FILTER = ("311", "312", "313", "321", "322", "323", "324", "211", "242")
+CODE_FILTER = ("111", "112", "121", "211", "242", "311", "312", "313", "321", "322", "323", "324")
 DATASET_ID = "landcover_corine_2018_filtered"
 SOURCE_SYSTEM = "copernicus_corine_2018"
 ORIGIN_FORMAT = "FileGDB"
