@@ -150,6 +150,7 @@ http://127.0.0.1:8000
 - `GET /api/landcover`: `FeatureCollection` GeoJSON agregado desde `pub.landcover_filtered`.
 - `GET /api/layers/landcover`: metadatos de la capa publicada.
 - `GET /api/landcover/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales `MVT` para render principal de landcover.
+- `GET /api/landcover/point?lon=...&lat=...&bbox=...&width=...&height=...&i=...&j=...&crs=EPSG:3857`: consulta de atributos por punto vía `GetFeatureInfo` sobre el WMS de IGN.
 - `GET /api/landcover/features?bbox=minx,miny,maxx,maxy`: endpoint auxiliar de depuración/detalle espacial desde `core.landcover_polygon`.
 - `GET /api/landcover/features/{id}`: detalle GeoJSON de una feature individual de `core.landcover_polygon`.
 - `GET /api/effis/wmts`: GeoJSON local de focos EFFIS/Copernicus vectorizados.

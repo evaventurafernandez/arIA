@@ -2,6 +2,7 @@ import csv
 import gzip
 import io
 import json
+import math
 import os
 import tarfile
 import time
@@ -10,6 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import format_datetime
+from functools import lru_cache
  
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -18,9 +20,10 @@ from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic_settings import BaseSettings
+from pyproj import Transformer
 from psycopg_pool import ConnectionPool
 from shapely.geometry import Point, shape
-from shapely.ops import unary_union
+from shapely.ops import transform, unary_union
 
 
 # Claves 
@@ -61,6 +64,10 @@ EFFIS_WMTS_BASE = "https://maps.effis.emergency.copernicus.eu/gwist/wmts"
 EFFIS_WMTS_LAYERS = {"viirs.hs.today"}
 EFFIS_LOCAL_FIRES_PATH = "data/copernicus/fires/effis_viirs_hs_today_wfs.geojson"
 SPAIN_BOUNDARY_PATH = "data/boundaries/spain_nuts_2024_01m.geojson"
+LANDCOVER_WMS_URL = "https://servicios.idee.es/wms-inspire/ocupacion-suelo"
+LANDCOVER_WMS_LAYER = "LC.LandCoverSurfaces"
+LANDCOVER_WMS_INFO_FORMAT = "application/json"
+LANDCOVER_AREA_CRS = "EPSG:3035"
 
 # AEMET: parseo CAP 
 NS = "urn:oasis:names:tc:emergency:cap:1.2"
@@ -546,6 +553,258 @@ def get_landcover_zoom_config(
         "units_per_pixel": units_per_pixel,
     }
 
+def clean_landcover_wms_text(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    return " ".join(str(value).split())
+
+def detect_landcover_wms_dataset(feature_id: str) -> str:
+    if feature_id.startswith("corine2018."):
+        return "CORINE 2018"
+    if feature_id.startswith("siose2014."):
+        return "SIOSE 2014"
+    if feature_id.startswith("sioseAR2017."):
+        return "SIOSE AR 2017"
+    return "IGN WMS"
+
+def normalize_landcover_wms_crs_name(payload: dict) -> str:
+    crs = payload.get("crs") or {}
+    properties = crs.get("properties") or {}
+    name = str(properties.get("name") or "").upper()
+    if name.endswith("EPSG::3857") or name.endswith("EPSG:3857"):
+        return "EPSG:3857"
+    if name.endswith("EPSG::4326") or name.endswith("EPSG:4326"):
+        return "EPSG:4326"
+    if name.endswith("CRS::84") or name.endswith("CRS:84"):
+        return "CRS:84"
+    return ""
+
+def extract_landcover_wms_coordinate_pair(coordinates: object) -> tuple[float, float] | None:
+    if isinstance(coordinates, (list, tuple)):
+        if len(coordinates) >= 2 and all(isinstance(value, (int, float)) for value in coordinates[:2]):
+            return float(coordinates[0]), float(coordinates[1])
+        for item in coordinates:
+            pair = extract_landcover_wms_coordinate_pair(item)
+            if pair is not None:
+                return pair
+    return None
+
+def normalize_landcover_wms_source_crs(source_crs: str, geometry: dict | None) -> str:
+    if source_crs in {"EPSG:3857", "EPSG:4326", "CRS:84"}:
+        return source_crs
+    if not geometry:
+        return source_crs
+    if geometry.get("type") == "GeometryCollection":
+        for item in geometry.get("geometries", []):
+            normalized = normalize_landcover_wms_source_crs(source_crs, item)
+            if normalized in {"EPSG:3857", "EPSG:4326", "CRS:84"}:
+                return normalized
+        return source_crs
+    pair = extract_landcover_wms_coordinate_pair(geometry.get("coordinates"))
+    if pair is None:
+        return source_crs
+    x, y = pair
+    if abs(x) <= 180 and abs(y) <= 90:
+        return "EPSG:4326"
+    return "EPSG:3857"
+
+def mercator_to_wgs84(x: float, y: float) -> tuple[float, float]:
+    lon = (x / 20037508.34) * 180.0
+    lat = (y / 20037508.34) * 180.0
+    lat = (180.0 / math.pi) * (2.0 * math.atan(math.exp(lat * math.pi / 180.0)) - math.pi / 2.0)
+    return lon, lat
+
+def reproject_landcover_wms_coordinates(coords: list, source_crs: str) -> list:
+    if not coords:
+        return coords
+    if isinstance(coords[0], (int, float)):
+        if source_crs == "EPSG:3857":
+            lon, lat = mercator_to_wgs84(float(coords[0]), float(coords[1]))
+            if len(coords) > 2:
+                return [lon, lat, *coords[2:]]
+            return [lon, lat]
+        return coords
+    return [reproject_landcover_wms_coordinates(item, source_crs) for item in coords]
+
+def reproject_landcover_wms_geometry(geometry: dict | None, source_crs: str) -> dict | None:
+    if not geometry or source_crs not in {"EPSG:3857"}:
+        return geometry
+    geometry_type = geometry.get("type")
+    if geometry_type == "GeometryCollection":
+        return {
+            **geometry,
+            "geometries": [
+                reproject_landcover_wms_geometry(item, source_crs)
+                for item in geometry.get("geometries", [])
+            ],
+        }
+    return {
+        **geometry,
+        "coordinates": reproject_landcover_wms_coordinates(geometry.get("coordinates", []), source_crs),
+    }
+
+def normalize_landcover_wms_surface_ha(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        surface_ha = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(surface_ha) or surface_ha < 0:
+        return None
+    return round(surface_ha, 2)
+
+@lru_cache(maxsize=8)
+def get_landcover_area_transformer(source_crs: str) -> Transformer | None:
+    if not source_crs:
+        return None
+    normalized_source = "EPSG:4326" if source_crs == "CRS:84" else source_crs
+    if normalized_source == LANDCOVER_AREA_CRS:
+        return None
+    return Transformer.from_crs(normalized_source, LANDCOVER_AREA_CRS, always_xy=True)
+
+def calculate_landcover_wms_surface_ha(geometry: dict | None, source_crs: str) -> float | None:
+    effective_source_crs = normalize_landcover_wms_source_crs(source_crs, geometry)
+    if not geometry or not effective_source_crs:
+        return None
+    try:
+        geom = shape(geometry)
+        if geom.is_empty:
+            return None
+        transformer = get_landcover_area_transformer(effective_source_crs)
+        geom_for_area = geom if transformer is None else transform(transformer.transform, geom)
+        surface_ha = geom_for_area.area / 10000.0
+    except Exception:
+        return None
+    if not math.isfinite(surface_ha) or surface_ha < 0:
+        return None
+    return round(surface_ha, 2)
+
+def normalize_landcover_wms_feature(feature: dict, source_crs: str) -> dict:
+    raw_properties = feature.get("properties") or {}
+    feature_id = str(feature.get("id") or "")
+    raw_geometry = feature.get("geometry")
+    effective_source_crs = normalize_landcover_wms_source_crs(source_crs, raw_geometry)
+    label = (
+        clean_landcover_wms_text(raw_properties.get("valor"))
+        or clean_landcover_wms_text(raw_properties.get("codiige_valor"))
+        or clean_landcover_wms_text(raw_properties.get("hilucs_valor"))
+        or "Uso del suelo"
+    )
+
+    code = None
+    code_field = None
+    for candidate_field in ("codigo_n3", "codiige", "hilucs"):
+        value = raw_properties.get(candidate_field)
+        if value not in (None, ""):
+            code = str(value)
+            code_field = candidate_field
+            break
+
+    secondary_label = ""
+    if code_field != "hilucs":
+        secondary_label = clean_landcover_wms_text(raw_properties.get("hilucs_valor"))
+
+    surface_ha = normalize_landcover_wms_surface_ha(raw_properties.get("superficie_ha"))
+    surface_ha_source = "attribute" if surface_ha is not None else None
+    if surface_ha is None:
+        surface_ha = calculate_landcover_wms_surface_ha(raw_geometry, effective_source_crs)
+        if surface_ha is not None:
+            surface_ha_source = "computed"
+
+    return {
+        "type": "Feature",
+        "id": feature.get("id"),
+        "geometry": reproject_landcover_wms_geometry(raw_geometry, effective_source_crs),
+        "properties": {
+            "label": label,
+            "code": code,
+            "code_field": code_field,
+            "source_dataset": detect_landcover_wms_dataset(feature_id),
+            "source_date": raw_properties.get("fecha_observacion"),
+            "secondary_label": secondary_label,
+            "surface_ha": surface_ha,
+            "surface_ha_source": surface_ha_source,
+            "geometry_crs": "EPSG:4326",
+            "source_properties": raw_properties,
+        },
+    }
+
+def parse_landcover_query_bbox(bbox: str) -> list[float]:
+    try:
+        values = [float(value) for value in bbox.split(",")]
+    except ValueError as exc:
+        raise ValueError("bbox debe contener cuatro numeros") from exc
+    if len(values) != 4:
+        raise ValueError("bbox debe tener formato minx,miny,maxx,maxy")
+    minx, miny, maxx, maxy = values
+    if minx >= maxx or miny >= maxy:
+        raise ValueError("bbox invalido: min debe ser menor que max")
+    return values
+
+def fetch_landcover_features_by_point(
+    lon: float,
+    lat: float,
+    bbox: str,
+    width: int,
+    height: int,
+    i: int,
+    j: int,
+    crs: str,
+) -> dict:
+    bbox_values = parse_landcover_query_bbox(bbox)
+    params = {
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "REQUEST": "GetFeatureInfo",
+        "LAYERS": LANDCOVER_WMS_LAYER,
+        "QUERY_LAYERS": LANDCOVER_WMS_LAYER,
+        "CRS": crs,
+        "BBOX": ",".join(str(value) for value in bbox_values),
+        "WIDTH": str(width),
+        "HEIGHT": str(height),
+        "I": str(i),
+        "J": str(j),
+        "STYLES": "",
+        "FORMAT": "image/png",
+        "INFO_FORMAT": LANDCOVER_WMS_INFO_FORMAT,
+        "FEATURE_COUNT": "1",
+    }
+
+    with httpx.Client(timeout=30, follow_redirects=True, trust_env=False) as client:
+        response = client.get(LANDCOVER_WMS_URL, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    response_crs = normalize_landcover_wms_crs_name(payload)
+    normalized_features = [
+        normalize_landcover_wms_feature(feature, response_crs)
+        for feature in payload.get("features", [])
+    ]
+
+    return {
+        "type": "FeatureCollection",
+        "features": normalized_features,
+        "metadata": {
+            "source": "IGN WMS GetFeatureInfo",
+            "wms_url": LANDCOVER_WMS_URL,
+            "layer": LANDCOVER_WMS_LAYER,
+            "response_crs": response_crs,
+            "geometry_crs": "EPSG:4326",
+            "query": {
+                "lon": lon,
+                "lat": lat,
+                "crs": crs,
+                "bbox": bbox_values,
+                "width": width,
+                "height": height,
+                "i": i,
+                "j": j,
+            },
+            "returned_count": len(normalized_features),
+        },
+    }
+
 def fetch_landcover_features_by_bbox(
     minx: float,
     miny: float,
@@ -1010,6 +1269,30 @@ def get_landcover_features(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Error consultando features landcover: {exc}") from exc
     return JSONResponse(content=data, media_type="application/geo+json")
+
+@app.get("/api/landcover/point")
+def get_landcover_point(
+    lon: float = Query(..., ge=-180, le=180, description="Longitud del punto en EPSG:4326"),
+    lat: float = Query(..., ge=-90, le=90, description="Latitud del punto en EPSG:4326"),
+    bbox: str = Query(..., description="BBox del mapa en el CRS de consulta con formato minx,miny,maxx,maxy"),
+    width: int = Query(..., ge=1, le=10000, description="Ancho del viewport en pixeles"),
+    height: int = Query(..., ge=1, le=10000, description="Alto del viewport en pixeles"),
+    i: int = Query(..., ge=0, description="Coordenada horizontal del pixel consultado"),
+    j: int = Query(..., ge=0, description="Coordenada vertical del pixel consultado"),
+    crs: str = Query("EPSG:3857", description="CRS del mapa usado para GetFeatureInfo"),
+):
+    """Consulta de atributos landcover por punto via GetFeatureInfo sobre el WMS de IGN."""
+    try:
+        data = fetch_landcover_features_by_point(lon, lat, bbox, width, height, i, j, crs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando landcover por punto: {exc}") from exc
+    return JSONResponse(
+        content=data,
+        headers={"Cache-Control": "no-store"},
+        media_type="application/geo+json",
+    )
 
 @app.get("/api/landcover/features/{feature_id}")
 def get_landcover_feature(feature_id: int):

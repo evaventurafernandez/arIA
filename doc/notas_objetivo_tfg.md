@@ -105,3 +105,12 @@ Dejaría fuera la predicción automática, la toma de decisiones de emergencia y
 - Qué condiciones definen un aviso peligroso.
 - Qué se espera del LLM: prototipo visible, diseño funcional o integración mínima.
 - Cómo validar el resultado: episodios reales, comparación FIRMS-Copernicus o revisión de zonas concretas.
+
+## Actualización 2026-04-22 sobre landcover interactivo
+
+Se ha refinado bastante la línea de `landcover` respecto a lo que se planteaba al principio. La visualización filtrada local del proyecto sigue teniendo sentido para publicación propia, pero la consulta puntual vinculada a la capa visible del `IGN` ha terminado evolucionando hacia `GetFeatureInfo`, porque era la única forma de hacer coincidir de verdad lo que el usuario ve con lo que el visor devuelve al pinchar.
+
+Además, esa línea se ha conectado ya con los focos `NASA FIRMS`: las cards del sidebar pueden mostrar el tipo de uso del suelo en el que cae cada foco y el mapa puede resaltar el polígono asociado. El detalle y la historia de este cambio quedan documentados en:
+
+- `doc/notas/05-corine-y-usos-del-suelo/evolucion-consulta-puntual-landcover-de-core-a-getfeatureinfo-ign.md`
+- `doc/notas/03-incendios-firms-effis/contextualizacion-de-focos-nasa-firms-con-usos-del-suelo.md`

@@ -22,7 +22,7 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
   color: #6f86a6; font-size: 10px; font-weight: 700;
   letter-spacing: .5px; text-transform: uppercase;
 }
-#visible-bbox, #pointer-coord { color: #e0e6f0; }
+#map-zoom, #visible-bbox, #pointer-coord { color: #e0e6f0; }
 #stats-bar { font-size: 11px; color: #777; flex-shrink: 0; }
 #stats-bar b { color: #bbb; }
 

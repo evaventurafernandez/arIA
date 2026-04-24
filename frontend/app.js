@@ -6,11 +6,25 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 
 L.control.zoom({ position: 'topright' }).addTo(map);
 
+const mapZoomEl = document.getElementById('map-zoom');
 const visibleBboxEl = document.getElementById('visible-bbox');
 const pointerCoordEl = document.getElementById('pointer-coord');
 
 function formatCoord(value, digits = 4) {
   return Number(value).toFixed(digits);
+}
+
+function formatZoom(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '--';
+  return Number.isInteger(numericValue)
+    ? String(numericValue)
+    : numericValue.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function updateMapZoom() {
+  if (!mapZoomEl) return;
+  mapZoomEl.textContent = formatZoom(map.getZoom());
 }
 
 function updateVisibleBbox() {
@@ -32,8 +46,10 @@ function updatePointerCoord(latlng) {
 }
 
 map.on('moveend zoomend', updateVisibleBbox);
+map.on('zoomend', updateMapZoom);
 map.on('mousemove', e => updatePointerCoord(e.latlng));
 map.on('mouseout', () => updatePointerCoord(null));
+updateMapZoom();
 updateVisibleBbox();
 
 const resetBtn = L.control({ position: 'topright' });
@@ -47,16 +63,13 @@ resetBtn.onAdd = () => {
     map.setView([40.0, -3.7], 6);
     // Desactivar capas WMS
     Object.keys(wmsActive).forEach(key => {
-      map.removeLayer(wmsActive[key]);
-      delete wmsActive[key];
       const chk = document.getElementById('chk-' + key);
       if (chk) chk.checked = false;
+      toggleWMS(key, false);
     });
     // Desactivar CORINE
     if (corineLayer) { map.removeLayer(corineLayer); }
     corineVisible = false;
-    const chkC = document.getElementById('chk-corine');
-    if (chkC) chkC.checked = false;
     // Mantener las capas esenciales activas en la vista inicial.
     showAlerts = true;
     showFires = true;
@@ -125,11 +138,15 @@ const WMS_DEFS = {
 const wmsActive = {};
 const SPAIN_BOUNDS = L.latLngBounds([27.5, -18.5], [43.9, 4.5]);
 const WMS_LAYER_PANE = 'wmsLayerPane';
+const CORINE_SELECTION_PANE = 'corineSelectionPane';
 let spainBoundaryData = null;
 let spainBoundaryPromise = null;
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
+map.createPane(CORINE_SELECTION_PANE);
+map.getPane(CORINE_SELECTION_PANE).style.zIndex = 460;
+map.getPane(CORINE_SELECTION_PANE).style.pointerEvents = 'none';
 
 function loadSpainBoundary() {
   if (spainBoundaryData) return Promise.resolve(spainBoundaryData);
@@ -315,6 +332,7 @@ function toggleWMS(key, enabled) {
     wmsActive[key] = buildWMS(key).addTo(map);
   } else {
     if (wmsActive[key]) { map.removeLayer(wmsActive[key]); delete wmsActive[key]; }
+    if (key === 'corine_wms') clearCorinePointSelection();
   }
   updateLegend();
 }
@@ -459,7 +477,16 @@ function updateLegend() {
 let corineLayer   = null;   // L.vectorGrid instance
 let corineVisible = false;
 let corineTooltip = null;
+let corineMapPopup = null;
+let corinePointSelectionLayer = null;
+let corinePointQueryController = null;
+let corinePointQueryToken = 0;
+let fireLandcoverBatchToken = 0;
 const CORINE_VECTOR_TILE_URL = '/api/landcover/tiles/{z}/{x}/{y}.mvt';
+const LANDCOVER_POINT_QUERY_SIZE = 101;
+const LANDCOVER_FIRE_QUERY_ZOOM = 16;
+const FIRE_LANDCOVER_WORKERS = 4;
+const fireLandcoverInfoCache = new Map();
 
 const CORINE_CLASSES = [
   { code: '1001', color: '#e6004d', label: 'Tejido urbano' },
@@ -500,6 +527,289 @@ function clearCorineTooltip() {
   if (corineTooltip) {
     map.removeLayer(corineTooltip);
     corineTooltip = null;
+  }
+}
+
+function closeCorineMapPopup(abortQuery = true) {
+  if (abortQuery) abortCorinePointQuery();
+  const popup = corineMapPopup;
+  corineMapPopup = null;
+  if (!popup) return;
+  if (map.closePopup) map.closePopup(popup);
+}
+
+function openCorineMapPopup(latlng, content) {
+  closeCorineMapPopup(false);
+  corineMapPopup = L.popup({ className: 'corine-landcover-popup' })
+    .setLatLng(latlng)
+    .setContent(content);
+  corineMapPopup.openOn(map);
+  return corineMapPopup;
+}
+
+function mercatorToWgs84(x, y) {
+  const lng = (x / 20037508.34) * 180;
+  let lat = (y / 20037508.34) * 180;
+  lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
+  return [lng, lat];
+}
+
+function getFirstCoordinatePair(coords) {
+  if (!Array.isArray(coords) || !coords.length) return null;
+  if (typeof coords[0] === 'number') return coords;
+  return getFirstCoordinatePair(coords[0]);
+}
+
+function shouldReprojectLandcoverGeometry(feature) {
+  const geometryCrs = feature?.properties?.geometry_crs;
+  if (geometryCrs === 'EPSG:4326' || geometryCrs === 'CRS:84') return false;
+  if (geometryCrs === 'EPSG:3857') return true;
+
+  const firstCoord = getFirstCoordinatePair(feature?.geometry?.coordinates);
+  if (!firstCoord || firstCoord.length < 2) return false;
+
+  const [x, y] = firstCoord;
+  return Math.abs(Number(x)) > 180 || Math.abs(Number(y)) > 90;
+}
+
+function reprojectLandcoverCoordinates(coords) {
+  if (!Array.isArray(coords) || !coords.length) return coords;
+  if (typeof coords[0] === 'number') {
+    const [lng, lat] = mercatorToWgs84(Number(coords[0]), Number(coords[1]));
+    if (coords.length > 2) return [lng, lat, ...coords.slice(2)];
+    return [lng, lat];
+  }
+  return coords.map(reprojectLandcoverCoordinates);
+}
+
+function reprojectLandcoverGeometry(geometry) {
+  if (!geometry) return geometry;
+  if (geometry.type === 'GeometryCollection') {
+    return {
+      ...geometry,
+      geometries: Array.isArray(geometry.geometries)
+        ? geometry.geometries.map(reprojectLandcoverGeometry)
+        : [],
+    };
+  }
+  return {
+    ...geometry,
+    coordinates: reprojectLandcoverCoordinates(geometry.coordinates),
+  };
+}
+
+function normalizeLandcoverPointFeature(feature) {
+  if (!feature?.geometry || !shouldReprojectLandcoverGeometry(feature)) return feature;
+  return {
+    ...feature,
+    geometry: reprojectLandcoverGeometry(feature.geometry),
+    properties: {
+      ...(feature.properties || {}),
+      geometry_crs: 'EPSG:4326',
+    },
+  };
+}
+
+function abortCorinePointQuery() {
+  if (corinePointQueryController) {
+    corinePointQueryController.abort();
+    corinePointQueryController = null;
+  }
+}
+
+function clearCorinePointSelection() {
+  closeCorineMapPopup();
+  if (corinePointSelectionLayer) {
+    map.removeLayer(corinePointSelectionLayer);
+    corinePointSelectionLayer = null;
+  }
+}
+
+function setCorinePointSelection(feature) {
+  const normalizedFeature = normalizeLandcoverPointFeature(feature);
+  clearCorinePointSelection();
+  corinePointSelectionLayer = L.geoJSON(normalizedFeature, {
+    pane: CORINE_SELECTION_PANE,
+    interactive: false,
+    style: () => ({
+      color: '#00f0f0',
+      weight: 2,
+      opacity: 1,
+      fill: true,
+      fillColor: '#00f0f0',
+      fillOpacity: 0.05,
+      dashArray: '8 5',
+      lineJoin: 'round',
+    }),
+  }).addTo(map);
+  if (corinePointSelectionLayer.bringToFront) corinePointSelectionLayer.bringToFront();
+}
+
+function isCorineWmsActive() {
+  return Boolean(wmsActive.corine_wms);
+}
+
+function buildLandcoverPointQuery(latlng, options = {}) {
+  const queryZoom = Number.isFinite(Number(options.queryZoom))
+    ? Number(options.queryZoom)
+    : null;
+  const width = Number.isFinite(Number(options.width))
+    ? Math.max(3, Math.round(Number(options.width)))
+    : map.getSize().x;
+  const height = Number.isFinite(Number(options.height))
+    ? Math.max(3, Math.round(Number(options.height)))
+    : map.getSize().y;
+  let southWestProjected;
+  let northEastProjected;
+  let i;
+  let j;
+
+  if (queryZoom !== null) {
+    const centerPoint = map.project(latlng, queryZoom);
+    const halfWidth = (width - 1) / 2;
+    const halfHeight = (height - 1) / 2;
+    const southWest = map.unproject(
+      L.point(centerPoint.x - halfWidth, centerPoint.y + halfHeight),
+      queryZoom
+    );
+    const northEast = map.unproject(
+      L.point(centerPoint.x + halfWidth, centerPoint.y - halfHeight),
+      queryZoom
+    );
+    southWestProjected = map.options.crs.project(southWest);
+    northEastProjected = map.options.crs.project(northEast);
+    i = Math.floor(width / 2);
+    j = Math.floor(height / 2);
+  } else {
+    const bounds = map.getBounds();
+    const size = map.getSize();
+    const clickPoint = map.latLngToContainerPoint(latlng);
+    southWestProjected = map.options.crs.project(bounds.getSouthWest());
+    northEastProjected = map.options.crs.project(bounds.getNorthEast());
+    i = Math.max(0, Math.min(size.x - 1, Math.round(clickPoint.x)));
+    j = Math.max(0, Math.min(size.y - 1, Math.round(clickPoint.y)));
+  }
+
+  return {
+    lon: latlng.lng,
+    lat: latlng.lat,
+    bbox: [
+      southWestProjected.x,
+      southWestProjected.y,
+      northEastProjected.x,
+      northEastProjected.y,
+    ].join(','),
+    width,
+    height,
+    i,
+    j,
+    crs: 'EPSG:3857',
+  };
+}
+
+async function fetchLandcoverPoint(latlng, signal, options = {}) {
+  const query = buildLandcoverPointQuery(latlng, options);
+  const params = new URLSearchParams({
+    lon: String(query.lon),
+    lat: String(query.lat),
+    bbox: query.bbox,
+    width: String(query.width),
+    height: String(query.height),
+    i: String(query.i),
+    j: String(query.j),
+    crs: query.crs,
+  });
+  const response = await fetch(`/api/landcover/point?${params.toString()}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data.detail) message = data.detail;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function buildFireLandcoverCacheKey(lat, lon) {
+  return `${lat.toFixed(5)},${lon.toFixed(5)}@z${LANDCOVER_FIRE_QUERY_ZOOM}`;
+}
+
+function applyFireLandcoverInfo(fire, info) {
+  fire.landcoverStatus = info.status;
+  fire.landcoverLabel = info.label || '';
+  fire.landcoverSourceDataset = info.sourceDataset || '';
+}
+
+function initializeFireLandcoverInfo(fire) {
+  const lat = Number(fire.latitude);
+  const lon = Number(fire.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    applyFireLandcoverInfo(fire, { status: 'error' });
+    return;
+  }
+  const cached = fireLandcoverInfoCache.get(buildFireLandcoverCacheKey(lat, lon));
+  if (cached) {
+    applyFireLandcoverInfo(fire, cached);
+    return;
+  }
+  applyFireLandcoverInfo(fire, { status: 'loading' });
+}
+
+function buildCorinePointPopupContent(feature) {
+  const props = feature?.properties || {};
+  const label = props.label || 'Uso del suelo';
+  const code = props.code || 'n/d';
+  const sourceDataset = props.source_dataset
+    ? `<br>Fuente: ${escapeHtml(props.source_dataset)}`
+    : '';
+  const secondary = props.secondary_label
+    ? `<br>${escapeHtml(props.secondary_label)}`
+    : '';
+  const area = Number.isFinite(Number(props.surface_ha))
+    ? `<br>Superficie: ${Number(props.surface_ha).toFixed(2)} ha`
+    : '';
+  return `<b>${escapeHtml(label)}</b><br>Código: ${escapeHtml(code)}${sourceDataset}${secondary}${area}`;
+}
+
+async function handleCorineWmsClick(latlng) {
+  if (!isCorineWmsActive()) return;
+  if (map.getZoom() < 11) {
+    clearCorinePointSelection();
+    openCorineMapPopup(latlng, '<b>Zoom insuficiente.</b><br>Acércate más e inténtalo de nuevo.');
+    return;
+  } 
+
+  const token = ++corinePointQueryToken;
+  abortCorinePointQuery();
+  const controller = new AbortController();
+  corinePointQueryController = controller;
+
+  openCorineMapPopup(latlng, 'Consultando uso del suelo...');
+
+  try {
+    const data = await fetchLandcoverPoint(latlng, controller.signal);
+    if (controller.signal.aborted || token !== corinePointQueryToken) return;
+
+    corinePointQueryController = null;
+    const feature = Array.isArray(data.features) ? data.features[0] : null;
+
+    if (!feature) {
+      clearCorinePointSelection();
+      openCorineMapPopup(latlng, 'Información no disponible para este punto.');
+      return;
+    } 
+
+    setCorinePointSelection(feature);
+    openCorineMapPopup(latlng, buildCorinePointPopupContent(feature));
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    corinePointQueryController = null;
+    clearCorinePointSelection();
+    openCorineMapPopup(latlng, `No se pudo consultar el uso del suelo: ${escapeHtml(error.message)}`);
   }
 }
 
@@ -545,10 +855,7 @@ function buildCorineLayer() {
   layer.on('click', e => {
     const props = e.layer.properties || {};
     const label = props.class_label || props.label || 'Uso del suelo';
-    L.popup()
-      .setLatLng(e.latlng)
-      .setContent(`<b>${label}</b><br>Código canónico: ${props.class_code || 'n/d'}`)
-      .openOn(map);
+    openCorineMapPopup(e.latlng, `<b>${label}</b><br>Código canónico: ${props.class_code || 'n/d'}`);
   });
   return layer;
 }
@@ -565,13 +872,10 @@ function toggleCorine(enabled) {
   updateLegend();
 }
  
-function autoActivateCorine() {
-  const chk = document.getElementById('chk-corine');
-  if (chk && !chk.checked) {
-    chk.checked = true;
-    toggleCorine(true);
-  }
-}
+map.on('click', e => {
+  if (!isCorineWmsActive()) return;
+  void handleCorineWmsClick(e.latlng);
+});
 
 // Estado 
 let alertsData   = [];
@@ -719,6 +1023,7 @@ async function loadFiresInBackground() {
   try {
     firesData = await fetchSpainHotspots();
     firesError = null;
+    firesData.forEach(initializeFireLandcoverInfo);
   } catch (error) {
     firesData = [];
     firesError = error.message;
@@ -727,6 +1032,7 @@ async function loadFiresInBackground() {
     updateStatsBar(buildClientStats(alertsData, firesData));
     renderFires();
     renderList();
+    if (!firesError) void enrichFireLandcoverInfo();
   }
 }
 
@@ -848,6 +1154,101 @@ function formatFireTime(f) {
   return time.replace(/(\d{2})(\d{2})/, '$1:$2');
 }
 
+function buildFireLandcoverMarkup(fire) {
+  if (fire.landcoverStatus === 'ready' && fire.landcoverLabel) {
+    const source = fire.landcoverSourceDataset
+      ? ` · ${escapeHtml(fire.landcoverSourceDataset)}`
+      : '';
+    return `Cae en: <b>${escapeHtml(fire.landcoverLabel)}</b>${source}`;
+  }
+  if (fire.landcoverStatus === 'empty') {
+    return 'Cae en: sin coincidencia en la capa IGN';
+  }
+  if (fire.landcoverStatus === 'error') {
+    return 'Cae en: uso del suelo no disponible';
+  }
+  return 'Cae en: consultando uso del suelo...';
+}
+
+function updateFireLandcoverCard(fire) {
+  const target = document.querySelector(`.card[data-id="${fire.id}"] [data-role="fire-landcover"]`);
+  if (target) target.innerHTML = buildFireLandcoverMarkup(fire);
+}
+
+async function fetchFireLandcoverInfo(fire, batchToken) {
+  const lat = Number(fire.latitude);
+  const lon = Number(fire.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+  const cacheKey = buildFireLandcoverCacheKey(lat, lon);
+  const cached = fireLandcoverInfoCache.get(cacheKey);
+  if (cached) {
+    applyFireLandcoverInfo(fire, cached);
+    updateFireLandcoverCard(fire);
+    return;
+  }
+
+  try {
+    const data = await fetchLandcoverPoint(
+      L.latLng(lat, lon),
+      undefined,
+      {
+        queryZoom: LANDCOVER_FIRE_QUERY_ZOOM,
+        width: LANDCOVER_POINT_QUERY_SIZE,
+        height: LANDCOVER_POINT_QUERY_SIZE,
+      }
+    );
+    const feature = Array.isArray(data.features) ? data.features[0] : null;
+    const info = feature
+      ? {
+          status: 'ready',
+          label: feature.properties?.label || 'Uso del suelo',
+          sourceDataset: feature.properties?.source_dataset || '',
+        }
+      : { status: 'empty' };
+    fireLandcoverInfoCache.set(cacheKey, info);
+    if (batchToken !== fireLandcoverBatchToken) return;
+    applyFireLandcoverInfo(fire, info);
+    updateFireLandcoverCard(fire);
+  } catch (_) {
+    const info = { status: 'error' };
+    if (batchToken !== fireLandcoverBatchToken) return;
+    applyFireLandcoverInfo(fire, info);
+    updateFireLandcoverCard(fire);
+  }
+}
+
+async function enrichFireLandcoverInfo() {
+  const batchToken = ++fireLandcoverBatchToken;
+  const candidates = firesData.filter(f => Number.isFinite(Number(f.latitude)) && Number.isFinite(Number(f.longitude)));
+  if (!candidates.length) return;
+
+  let index = 0;
+  const workerCount = Math.min(FIRE_LANDCOVER_WORKERS, candidates.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (index < candidates.length && batchToken === fireLandcoverBatchToken) {
+      const fire = candidates[index];
+      index += 1;
+      if (fire.landcoverStatus === 'ready') {
+        updateFireLandcoverCard(fire);
+        continue;
+      }
+      await fetchFireLandcoverInfo(fire, batchToken);
+    }
+  });
+
+  await Promise.all(workers);
+}
+
+function focusFireLocation(lat, lon, id) {
+  const latlng = L.latLng(lat, lon);
+  map.setView(latlng, 16, { animate: false });
+  highlightCard(id);
+  autoActivateWMS('effis_fwi');
+  autoActivateWMS('corine_wms');
+  void handleCorineWmsClick(latlng);
+}
+
 function renderFires() {
   fireLayers.forEach(l => map.removeLayer(l));
   fireLayers = [];
@@ -877,10 +1278,7 @@ function renderFires() {
     
     // Activacion de capas en click a puntos
     circle.on('click', () => {
-      map.setView([lat, lon], 16);
-      highlightCard(f.id);
-      autoActivateWMS('effis_fwi');  // peligro meteorológico de incendio FWI
-      autoActivateCorine();    // tipo de vegetación
+      focusFireLocation(lat, lon, f.id);
     });
 
     fireLayers.push(circle);
@@ -960,6 +1358,7 @@ function renderList() {
           <span class="badge" style="background:${f.level_color}22;color:${f.level_color}">${f.level}</span>
           <span class="time">FRP: ${f.frp} MW</span>
         </div>
+        <div class="desc" data-role="fire-landcover">${buildFireLandcoverMarkup(f)}</div>
       </div>`;
     }).join('');
   }
@@ -983,6 +1382,7 @@ function zoomToAlert(id) {
   const coords = parsePolygon(a.polygon);
   if (coords.length) map.fitBounds(L.polygon(coords).getBounds(), { padding:[40,40] });
   highlightCard(id);
+  autoActivateWMS('corine_wms');
   if (isFloodRelated(a.event)) {
     autoActivateWMS('flood');
   } else {
@@ -992,10 +1392,7 @@ function zoomToAlert(id) {
 }
 
 function zoomToFire(lat, lon, id) {
-  map.setView([lat, lon], 14);
-  highlightCard(id);
-  autoActivateWMS('effis_fwi');
-  autoActivateCorine();
+  focusFireLocation(lat, lon, id);
 }
 
 // Toggles capas
@@ -1062,9 +1459,6 @@ function fmtDate(iso) {
 }
 
 // Listeners WMS y capas de datos 
-const chkCorine = document.getElementById('chk-corine');
-if (chkCorine) chkCorine.addEventListener('change', e => toggleCorine(e.target.checked));
- 
 ['effis_fires','flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
   if (el) el.addEventListener('change', e => toggleWMS(key, e.target.checked));
@@ -1075,9 +1469,4 @@ const chkFires  = document.getElementById('chk-fires');
 if (chkAlerts) chkAlerts.addEventListener('change', e => toggleLayer('alerts', e.target.checked));
 if (chkFires)  chkFires.addEventListener('change',  e => toggleLayer('fires',  e.target.checked));
  
-init().then(() => {
-  const urlParams = new URLSearchParams(window.location.search);
-  if (['1', 'true', 'yes'].includes((urlParams.get('corine') || '').toLowerCase())) {
-    autoActivateCorine();
-  }
-});
+init();
