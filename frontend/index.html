@@ -32,10 +32,35 @@
 
 <div class="main">
   <div id="map-container">
-    <div id="map"></div>
+    <div id="map-stage">
+      <div id="map"></div>
 
-    <!-- Leyenda WMS flotante -->
-    <div id="wms-legend" style="display:none"></div>
+      <!-- Leyenda WMS flotante -->
+      <div id="wms-legend" style="display:none"></div>
+
+      <!-- Timeline propia de areas quemadas -->
+      <div id="burnt-area-timeline" hidden>
+        <div id="burnt-area-timeline-top">
+          <div id="burnt-area-timeline-label">
+            <span id="ba-badge">BA DIARIO</span>
+            <div id="ba-meta">
+              <span id="ba-datetime">--</span>
+              <span id="ba-area" data-state="nodata">--</span>
+            </div>
+          </div>
+          <div id="burnt-area-timeline-controls">
+            <button id="ba-play" type="button">&#9654; Play</button>
+            <button id="ba-reset" type="button">&#8635; Inicio</button>
+          </div>
+        </div>
+        <input type="range" id="ba-slider" min="0" max="0" value="0" />
+        <div id="ba-ticks">
+          <span id="ba-range-start">--</span>
+          <span id="ba-range-end">--</span>
+        </div>
+        <div id="ba-note">Preparando catalogo diario...</div>
+      </div>
+    </div>
 
     <!-- Barra temporal -->
     <div id="timeline">
@@ -86,6 +111,11 @@
         <input type="checkbox" id="chk-effis_fires"/>
       </label>
       <label class="layer-row">
+        <span class="dot" style="background:#ff6b3d"></span>
+        Areas quemadas diarias Copernicus
+        <input type="checkbox" id="chk-burnt_area_daily"/>
+      </label>
+      <label class="layer-row">
         <span class="dot" style="background:#D97010"></span>
         Peligro de incendio FWI (EFFIS)
         <input type="checkbox" id="chk-effis_fwi"/>
@@ -131,7 +161,17 @@
     <!-- Lista dinámica -->
     <div class="list-header">
       <span id="list-title">Avisos activos</span>
-      <span id="list-count"></span>
+      <div class="list-header-actions">
+        <div id="alerts-view-control" class="alerts-view-control">
+          <span id="list-count" class="list-count-summary"></span>
+          <button id="alerts-view-toggle" class="alerts-view-switch" type="button" aria-pressed="false" title="Mostrando avisos activos y próximos en la lista y en el mapa">
+            <span class="alerts-view-switch-label alerts-view-switch-label-all">Todos</span>
+            <span class="alerts-view-switch-label alerts-view-switch-label-active">Activos</span>
+            <span class="alerts-view-switch-thumb" aria-hidden="true"></span>
+          </button>
+        </div>
+        <span id="fires-list-count" class="list-count-static" hidden></span>
+      </div>
     </div>
     <div id="main-list" class="list-scroll">
       <div class="empty">Cargando...</div>

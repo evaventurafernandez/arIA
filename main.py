@@ -1,4 +1,5 @@
 import csv
+import base64
 import gzip
 import io
 import json
@@ -6,14 +7,17 @@ import math
 import os
 import tarfile
 import time
+import zipfile
 import xml.etree.ElementTree as ET
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.utils import format_datetime
 from functools import lru_cache
+from pathlib import Path
  
 import httpx
+from PIL import Image
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -36,6 +40,17 @@ class Settings(BaseSettings):
     postgres_db: str = "meteovisor"
     postgres_user: str = "meteovisor"
     postgres_password: str = "meteovisor"
+    burnt_area_catalog_zip: str = ""
+    burnt_area_catalog_root: str = "data/copernicus/data_burnt_areas"
+    burnt_area_tiles_root: str = "data/copernicus/burnt_area/tiles"
+    burnt_area_default_date_from: str = "2025-05-01"
+    burnt_area_default_date_to: str = "2025-08-31"
+    cdse_username: str = ""
+    cdse_password: str = ""
+    cdse_access_token: str = ""
+    cdse_s3_access_key: str = ""
+    cdse_s3_secret_key: str = ""
+    cdse_s3_endpoint: str = "eodata.dataspace.copernicus.eu"
     class Config:
         env_file = ".env"
 
@@ -68,6 +83,720 @@ LANDCOVER_WMS_URL = "https://servicios.idee.es/wms-inspire/ocupacion-suelo"
 LANDCOVER_WMS_LAYER = "LC.LandCoverSurfaces"
 LANDCOVER_WMS_INFO_FORMAT = "application/json"
 LANDCOVER_AREA_CRS = "EPSG:3035"
+BURNT_AREA_LAYER_ID = "burnt_area_daily"
+BURNT_AREA_LAYER_NAME = "Areas quemadas diarias Copernicus CLMS"
+BURNT_AREA_SUPPORTED_VERSIONS = ("v4", "v3")
+BURNT_AREA_SUPPORTED_FORMATS = ("cog", "nc")
+BURNT_AREA_PREFERRED_VERSION = "v4"
+BURNT_AREA_PREFERRED_FORMAT = "cog"
+BURNT_AREA_DEFAULT_DATE_FROM = settings.burnt_area_default_date_from
+BURNT_AREA_DEFAULT_DATE_TO = settings.burnt_area_default_date_to
+BURNT_AREA_TILE_MIN_ZOOM = 4
+BURNT_AREA_TILE_MAX_ZOOM = 10
+BURNT_AREA_CATALOG_ENTRY_PATHS = {
+    ("v3", "cog"): "bio-geophysical/burnt_area/ba_global_300m_daily_v3/cog.csv",
+    ("v3", "nc"): "bio-geophysical/burnt_area/ba_global_300m_daily_v3/nc.csv",
+    ("v4", "cog"): "bio-geophysical/burnt_area/ba_global_300m_daily_v4/cog.csv",
+    ("v4", "nc"): "bio-geophysical/burnt_area/ba_global_300m_daily_v4/nc.csv",
+}
+BURNT_AREA_CATALOG_DIR_ENTRY_PATHS = {
+    ("v3", "cog"): ("ba_global_300m_daily_v3/cog.csv",),
+    ("v3", "nc"): ("ba_global_300m_daily_v3/nc.csv",),
+    ("v4", "cog"): ("ba_global_300m_daily_v4/cog.csv",),
+    ("v4", "nc"): ("ba_global_300m_daily_v4/nc.csv",),
+}
+BURNT_AREA_TRANSPARENT_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg=="
+)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def candidate_burnt_area_catalog_zip_paths() -> list[Path]:
+    paths: list[Path] = []
+    if settings.burnt_area_catalog_zip:
+        paths.append(Path(settings.burnt_area_catalog_zip))
+    root_dir = repo_root()
+    paths.extend(
+        [
+            root_dir / "data-store/files/raw/copernicus/clms/all.zip",
+            root_dir / "data-store/files/all.zip",
+            Path.home() / "Downloads" / "all.zip",
+        ]
+    )
+    return paths
+
+
+def candidate_burnt_area_catalog_root_paths() -> list[Path]:
+    paths: list[Path] = []
+    if settings.burnt_area_catalog_root:
+        paths.append(Path(settings.burnt_area_catalog_root))
+    root_dir = repo_root()
+    paths.extend(
+        [
+            root_dir / "data/copernicus/data_burnt_areas",
+            root_dir / "data-store/files/raw/copernicus/clms",
+        ]
+    )
+    return paths
+
+
+def resolve_burnt_area_catalog_zip_path() -> Path | None:
+    for path in candidate_burnt_area_catalog_zip_paths():
+        if path.is_file():
+            return path
+    return None
+
+
+def resolve_burnt_area_catalog_dir_entry_path(catalog_root: Path, dataset_version: str, delivery_format: str) -> Path | None:
+    logical_entry_path = BURNT_AREA_CATALOG_ENTRY_PATHS[(dataset_version, delivery_format)]
+    candidate_rel_paths = (logical_entry_path, *BURNT_AREA_CATALOG_DIR_ENTRY_PATHS[(dataset_version, delivery_format)])
+    for rel_path in candidate_rel_paths:
+        file_path = catalog_root / rel_path
+        if file_path.is_file():
+            return file_path
+    return None
+
+
+def resolve_burnt_area_catalog_root_path() -> Path | None:
+    for path in candidate_burnt_area_catalog_root_paths():
+        if not path.is_dir():
+            continue
+        if any(
+            resolve_burnt_area_catalog_dir_entry_path(path, dataset_version, delivery_format) is not None
+            for dataset_version in BURNT_AREA_SUPPORTED_VERSIONS
+            for delivery_format in BURNT_AREA_SUPPORTED_FORMATS
+        ):
+            return path
+    return None
+
+
+def normalize_burnt_area_catalog_datetime(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.replace('""', '"').replace('"T"', "T").strip('"')
+    if not cleaned:
+        return None
+    try:
+        return datetime.fromisoformat(cleaned).astimezone(timezone.utc).isoformat()
+    except ValueError:
+        return None
+
+
+def normalize_burnt_area_date(value: str) -> str:
+    return value[:10]
+
+
+def extract_burnt_area_product_version(product_name: str) -> str:
+    for part in product_name.split("_"):
+        if part.startswith("V"):
+            return part
+    return ""
+
+
+def build_burnt_area_catalog_item(
+    row: dict[str, str],
+    dataset_version: str,
+    delivery_format: str,
+    entry_path: str,
+) -> dict | None:
+    nominal_date = normalize_burnt_area_date(row.get("nominaldate", ""))
+    if not nominal_date:
+        return None
+    product_name = row.get("name", "")
+    return {
+        "dataset_version": dataset_version,
+        "delivery_format": delivery_format,
+        "catalog_entry_path": entry_path,
+        "source_item_id": row.get("id", ""),
+        "product_name": product_name,
+        "product_version": extract_burnt_area_product_version(product_name),
+        "content_length_bytes": int(row.get("contentlength", "0") or "0"),
+        "nominal_date": nominal_date,
+        "content_start_at": normalize_burnt_area_catalog_datetime(row.get("contentstartdate")),
+        "content_end_at": normalize_burnt_area_catalog_datetime(row.get("contentdateend")),
+        "catalog_ingested_at": normalize_burnt_area_catalog_datetime(row.get("ingestiondate")),
+        "catalog_modified_at": normalize_burnt_area_catalog_datetime(row.get("modificationdate")),
+        "checksum_algorithm": row.get("checksumalgorithm") or None,
+        "checksum_value": row.get("checksumvalue") or None,
+        "remote_uri": row.get("s3path", ""),
+    }
+
+
+@lru_cache(maxsize=4)
+def load_burnt_area_catalog_snapshot(catalog_zip_path: str, mtime_ns: int, size_bytes: int) -> dict:
+    del mtime_ns, size_bytes
+    snapshot = {
+        "catalog_source": "zip_catalog",
+        "catalog_zip_path": catalog_zip_path,
+        "catalog_root_path": None,
+        "items": [],
+        "items_by_version_format": {
+            version: {delivery_format: [] for delivery_format in BURNT_AREA_SUPPORTED_FORMATS}
+            for version in BURNT_AREA_SUPPORTED_VERSIONS
+        },
+    }
+    with zipfile.ZipFile(catalog_zip_path) as archive:
+        for (dataset_version, delivery_format), entry_path in BURNT_AREA_CATALOG_ENTRY_PATHS.items():
+            with archive.open(entry_path) as raw_stream:
+                reader = csv.DictReader(io.TextIOWrapper(raw_stream, encoding="utf-8"))
+                rows = []
+                for row in reader:
+                    item = build_burnt_area_catalog_item(row, dataset_version, delivery_format, entry_path)
+                    if item is None:
+                        continue
+                    rows.append(item)
+                    snapshot["items"].append(item)
+                rows.sort(key=lambda item: item["nominal_date"])
+                snapshot["items_by_version_format"][dataset_version][delivery_format] = rows
+    snapshot["items"].sort(
+        key=lambda item: (item["dataset_version"], item["delivery_format"], item["nominal_date"])
+    )
+    return snapshot
+
+
+@lru_cache(maxsize=4)
+def load_burnt_area_catalog_snapshot_from_dir(
+    catalog_root_path: str,
+    signature: tuple[tuple[str, int, int], ...],
+) -> dict:
+    del signature
+    snapshot = {
+        "catalog_source": "directory_catalog",
+        "catalog_zip_path": None,
+        "catalog_root_path": catalog_root_path,
+        "items": [],
+        "items_by_version_format": {
+            version: {delivery_format: [] for delivery_format in BURNT_AREA_SUPPORTED_FORMATS}
+            for version in BURNT_AREA_SUPPORTED_VERSIONS
+        },
+    }
+    catalog_root = Path(catalog_root_path)
+    for dataset_version in BURNT_AREA_SUPPORTED_VERSIONS:
+        for delivery_format in BURNT_AREA_SUPPORTED_FORMATS:
+            entry_path = BURNT_AREA_CATALOG_ENTRY_PATHS[(dataset_version, delivery_format)]
+            csv_path = resolve_burnt_area_catalog_dir_entry_path(catalog_root, dataset_version, delivery_format)
+            if csv_path is None:
+                continue
+            with csv_path.open(encoding="utf-8", newline="") as csv_stream:
+                reader = csv.DictReader(csv_stream)
+                rows = []
+                for row in reader:
+                    item = build_burnt_area_catalog_item(row, dataset_version, delivery_format, entry_path)
+                    if item is None:
+                        continue
+                    rows.append(item)
+                    snapshot["items"].append(item)
+                rows.sort(key=lambda item: item["nominal_date"])
+                snapshot["items_by_version_format"][dataset_version][delivery_format] = rows
+    snapshot["items"].sort(
+        key=lambda item: (item["dataset_version"], item["delivery_format"], item["nominal_date"])
+    )
+    return snapshot
+
+
+def get_burnt_area_catalog_snapshot() -> dict | None:
+    catalog_root = resolve_burnt_area_catalog_root_path()
+    if catalog_root is not None:
+        signature = []
+        for dataset_version in BURNT_AREA_SUPPORTED_VERSIONS:
+            for delivery_format in BURNT_AREA_SUPPORTED_FORMATS:
+                csv_path = resolve_burnt_area_catalog_dir_entry_path(catalog_root, dataset_version, delivery_format)
+                if csv_path is None:
+                    continue
+                stat = csv_path.stat()
+                signature.append((str(csv_path.relative_to(catalog_root)), stat.st_mtime_ns, stat.st_size))
+        return load_burnt_area_catalog_snapshot_from_dir(str(catalog_root), tuple(signature))
+
+    catalog_zip = resolve_burnt_area_catalog_zip_path()
+    if catalog_zip is None:
+        return None
+    stat = catalog_zip.stat()
+    return load_burnt_area_catalog_snapshot(str(catalog_zip), stat.st_mtime_ns, stat.st_size)
+
+
+def postgres_relation_exists(relation_name: str) -> bool:
+    if db_pool is None:
+        return False
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", (relation_name,))
+            row = cur.fetchone()
+    return bool(row and row[0] is not None)
+
+
+def resolve_local_burnt_area_path(path_value: str | None) -> Path | None:
+    if not path_value:
+        return None
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return repo_root() / path
+
+
+def local_burnt_area_path_exists(path_value: str | None) -> bool:
+    path = resolve_local_burnt_area_path(path_value)
+    return bool(path and path.exists())
+
+
+def local_burnt_area_tiles_exist(path_value: str | None) -> bool:
+    path = resolve_local_burnt_area_path(path_value)
+    if path is None or not path.is_dir():
+        return False
+    return next(path.glob("*/*/*.png"), None) is not None
+
+
+def query_burnt_area_core_rows() -> list[dict]:
+    if not postgres_relation_exists("core.burnt_area_daily_file"):
+        return []
+    sql = """
+    SELECT
+        dataset_version,
+        delivery_format,
+        nominal_date::text,
+        publication_status,
+        local_file_path IS NOT NULL AS has_local_file,
+        local_spain_cog_path IS NOT NULL AS has_local_spain_cog,
+        local_tiles_path IS NOT NULL AS has_local_tiles,
+        local_file_path,
+        local_spain_cog_path,
+        local_tiles_path
+    FROM core.burnt_area_daily_file
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    return [
+        {
+            "dataset_version": row[0],
+            "delivery_format": row[1],
+            "nominal_date": row[2],
+            "publication_status": row[3],
+            "has_local_file": local_burnt_area_path_exists(row[7]),
+            "has_local_spain_cog": local_burnt_area_path_exists(row[8]),
+            "has_local_tiles": local_burnt_area_tiles_exist(row[9]),
+            "local_file_path": row[7],
+            "local_spain_cog_path": row[8],
+            "local_tiles_path": row[9],
+        }
+        for row in rows
+    ]
+
+
+def build_burnt_area_publication_index() -> dict[tuple[str, str, str], dict]:
+    index = {}
+    for row in query_burnt_area_core_rows():
+        key = (row["dataset_version"], row["delivery_format"], row["nominal_date"])
+        index[key] = row
+    return index
+
+
+def merge_burnt_area_catalog_with_publication_state(
+    items: list[dict],
+    publication_index: dict[tuple[str, str, str], dict] | None = None,
+) -> list[dict]:
+    if publication_index is None:
+        publication_index = build_burnt_area_publication_index()
+    merged = []
+    for item in items:
+        publication = publication_index.get(
+            (item["dataset_version"], item["delivery_format"], item["nominal_date"]),
+            {},
+        )
+        merged.append(
+            {
+                **item,
+                "publication_status": publication.get("publication_status", "cataloged"),
+                "has_local_file": bool(publication.get("has_local_file", False)),
+                "has_local_spain_cog": bool(publication.get("has_local_spain_cog", False)),
+                "has_local_tiles": bool(publication.get("has_local_tiles", False)),
+                "local_file_path": publication.get("local_file_path"),
+                "local_spain_cog_path": publication.get("local_spain_cog_path"),
+                "local_tiles_path": publication.get("local_tiles_path"),
+            }
+        )
+    return merged
+
+
+def query_burnt_area_stats_rows(
+    dataset_version: str,
+    delivery_format: str,
+    date_from: str | None,
+    date_to: str | None,
+) -> list[dict]:
+    if not postgres_relation_exists("pub.burnt_area_daily_stat"):
+        return []
+    where_clauses = ["dataset_version = %s", "delivery_format = %s", "stat_scope = 'country'"]
+    params: list[object] = [dataset_version, delivery_format]
+    if date_from:
+        where_clauses.append("nominal_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where_clauses.append("nominal_date <= %s")
+        params.append(date_to)
+    sql = f"""
+    SELECT
+        nominal_date::text,
+        area_code,
+        area_label,
+        burned_area_ha,
+        burned_pixel_count,
+        burned_fraction_sum,
+        tiles_generated,
+        stats_generated_at
+    FROM pub.burnt_area_daily_stat
+    WHERE {' AND '.join(where_clauses)}
+    ORDER BY nominal_date
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    return [
+        {
+            "nominal_date": row[0],
+            "area_code": row[1],
+            "area_label": row[2],
+            "burned_area_ha": float(row[3]) if row[3] is not None else None,
+            "burned_pixel_count": int(row[4]) if row[4] is not None else None,
+            "burned_fraction_sum": float(row[5]) if row[5] is not None else None,
+            "tiles_generated": bool(row[6]),
+            "stats_generated_at": row[7].isoformat() if row[7] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def filter_burnt_area_items(
+    dataset_version: str,
+    delivery_format: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    publication_index: dict[tuple[str, str, str], dict] | None = None,
+) -> list[dict]:
+    snapshot = get_burnt_area_catalog_snapshot()
+    if snapshot is not None:
+        rows = snapshot["items_by_version_format"].get(dataset_version, {}).get(delivery_format, [])
+        rows = merge_burnt_area_catalog_with_publication_state(rows, publication_index)
+    else:
+        rows = [
+            row
+            for row in query_burnt_area_core_rows()
+            if row["dataset_version"] == dataset_version and row["delivery_format"] == delivery_format
+        ]
+    return [
+        row
+        for row in rows
+        if (date_from is None or row["nominal_date"] >= date_from)
+        and (date_to is None or row["nominal_date"] <= date_to)
+    ]
+
+
+def build_burnt_area_layer_metadata() -> dict:
+    publication_index = build_burnt_area_publication_index()
+    summary = []
+    published_dates = 0
+    for dataset_version in BURNT_AREA_SUPPORTED_VERSIONS:
+        for delivery_format in BURNT_AREA_SUPPORTED_FORMATS:
+            items = filter_burnt_area_items(
+                dataset_version,
+                delivery_format,
+                publication_index=publication_index,
+            )
+            available_dates = [item["nominal_date"] for item in items]
+            published_date_count = sum(1 for item in items if item.get("has_local_tiles"))
+            published_dates += published_date_count
+            summary.append(
+                {
+                    "dataset_version": dataset_version,
+                    "delivery_format": delivery_format,
+                    "date_count": len(items),
+                    "min_date": available_dates[0] if available_dates else None,
+                    "max_date": available_dates[-1] if available_dates else None,
+                    "published_date_count": published_date_count,
+                }
+            )
+
+    preferred_items = filter_burnt_area_items(
+        BURNT_AREA_PREFERRED_VERSION,
+        BURNT_AREA_PREFERRED_FORMAT,
+        publication_index=publication_index,
+    )
+    preferred_dates = [item["nominal_date"] for item in preferred_items]
+    snapshot = get_burnt_area_catalog_snapshot()
+    return {
+        "layer_id": BURNT_AREA_LAYER_ID,
+        "name": BURNT_AREA_LAYER_NAME,
+        "description": (
+            "Catalogo temporal diario de burnt area Copernicus CLMS preparado para publicacion "
+            "raster local con barra temporal independiente."
+        ),
+        "catalog_source": snapshot.get("catalog_source") if snapshot is not None else "database_only",
+        "catalog_zip_path": snapshot.get("catalog_zip_path") if snapshot is not None else None,
+        "catalog_root_path": snapshot.get("catalog_root_path") if snapshot is not None else None,
+        "preferred_version": BURNT_AREA_PREFERRED_VERSION,
+        "preferred_format": BURNT_AREA_PREFERRED_FORMAT,
+        "supported_versions": list(BURNT_AREA_SUPPORTED_VERSIONS),
+        "supported_formats": list(BURNT_AREA_SUPPORTED_FORMATS),
+        "available": bool(preferred_dates),
+        "default_date_from": BURNT_AREA_DEFAULT_DATE_FROM,
+        "default_date_to": BURNT_AREA_DEFAULT_DATE_TO,
+        "min_date": preferred_dates[0] if preferred_dates else None,
+        "max_date": preferred_dates[-1] if preferred_dates else None,
+        "date_count": len(preferred_dates),
+        "published_date_count": published_dates,
+        "timeline_url": "/api/burnt-area/timeline",
+        "stats_url": "/api/burnt-area/stats/daily",
+        "tile_url_template": "/api/burnt-area/tiles/{version}/{date}/{z}/{x}/{y}.png",
+        "publication_mode": "local_png_tiles",
+        "tile_min_zoom": BURNT_AREA_TILE_MIN_ZOOM,
+        "tile_max_zoom": BURNT_AREA_TILE_MAX_ZOOM,
+        "tiles_root": settings.burnt_area_tiles_root,
+        "variants": summary,
+    }
+
+
+def build_burnt_area_timeline_payload(
+    dataset_version: str,
+    delivery_format: str,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    items = filter_burnt_area_items(dataset_version, delivery_format, date_from, date_to)
+    stats_index = {
+        row["nominal_date"]: row
+        for row in query_burnt_area_stats_rows(dataset_version, delivery_format, date_from, date_to)
+    }
+    return {
+        "layer_id": BURNT_AREA_LAYER_ID,
+        "dataset_version": dataset_version,
+        "delivery_format": delivery_format,
+        "date_from": date_from,
+        "date_to": date_to,
+        "date_count": len(items),
+        "dates": [
+            {
+                "date": item["nominal_date"],
+                "publication_status": item.get("publication_status", "cataloged"),
+                "has_local_file": bool(item.get("has_local_file", False)),
+                "has_local_spain_cog": bool(item.get("has_local_spain_cog", False)),
+                "has_local_tiles": bool(item.get("has_local_tiles", False)),
+                "burned_area_ha": stats_index.get(item["nominal_date"], {}).get("burned_area_ha"),
+                "burned_pixel_count": stats_index.get(item["nominal_date"], {}).get("burned_pixel_count"),
+                "stats_generated_at": stats_index.get(item["nominal_date"], {}).get("stats_generated_at"),
+            }
+            for item in items
+        ],
+    }
+
+
+def build_burnt_area_daily_stats_payload(
+    dataset_version: str,
+    delivery_format: str,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    stats_rows = query_burnt_area_stats_rows(dataset_version, delivery_format, date_from, date_to)
+    if stats_rows:
+        return {
+            "layer_id": BURNT_AREA_LAYER_ID,
+            "dataset_version": dataset_version,
+            "delivery_format": delivery_format,
+            "date_from": date_from,
+            "date_to": date_to,
+            "stats_scope": "country",
+            "items": stats_rows,
+        }
+
+    timeline = build_burnt_area_timeline_payload(dataset_version, delivery_format, date_from, date_to)
+    return {
+        "layer_id": BURNT_AREA_LAYER_ID,
+        "dataset_version": dataset_version,
+        "delivery_format": delivery_format,
+        "date_from": date_from,
+        "date_to": date_to,
+        "stats_scope": "country",
+        "items": [
+            {
+                "nominal_date": item["date"],
+                "area_code": "ES",
+                "area_label": "Espana",
+                "burned_area_ha": None,
+                "burned_pixel_count": None,
+                "burned_fraction_sum": None,
+                "tiles_generated": item["has_local_tiles"],
+                "stats_generated_at": None,
+            }
+            for item in timeline["dates"]
+        ],
+    }
+
+
+def validate_burnt_area_variant(dataset_version: str, delivery_format: str) -> None:
+    if dataset_version not in BURNT_AREA_SUPPORTED_VERSIONS:
+        raise HTTPException(status_code=400, detail="dataset_version no soportada")
+    if delivery_format not in BURNT_AREA_SUPPORTED_FORMATS:
+        raise HTTPException(status_code=400, detail="delivery_format no soportado")
+
+
+def validate_burnt_area_date_string(value: str) -> str:
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="La fecha debe tener formato YYYY-MM-DD") from exc
+
+
+def validate_burnt_area_zoom_level(value: int) -> int:
+    if value < BURNT_AREA_TILE_MIN_ZOOM or value > BURNT_AREA_TILE_MAX_ZOOM:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"El zoom debe estar entre {BURNT_AREA_TILE_MIN_ZOOM} "
+                f"y {BURNT_AREA_TILE_MAX_ZOOM}"
+            ),
+        )
+    return value
+
+
+def resolve_burnt_area_tile_path(dataset_version: str, nominal_date: str, z: int, x: int, y: int) -> Path:
+    return Path(settings.burnt_area_tiles_root) / dataset_version / nominal_date / str(z) / str(x) / f"{y}.png"
+
+
+def resolve_burnt_area_tiles_zoom_dir(dataset_version: str, nominal_date: str, source_zoom: int) -> Path:
+    return Path(settings.burnt_area_tiles_root) / dataset_version / nominal_date / str(source_zoom)
+
+
+def slippy_tile_x_to_lon(tile_x: float, zoom: int) -> float:
+    return tile_x / (2 ** zoom) * 360.0 - 180.0
+
+
+def slippy_tile_y_to_lat(tile_y: float, zoom: int) -> float:
+    mercator = math.pi * (1.0 - 2.0 * tile_y / (2 ** zoom))
+    return math.degrees(math.atan(math.sinh(mercator)))
+
+
+def build_burnt_area_locator_ring(
+    tile_x: int,
+    tile_y: int,
+    zoom: int,
+    pixel_y: int,
+    pixel_x_start: int,
+    pixel_x_end: int,
+    tile_size: int,
+) -> list[list[float]]:
+    left = tile_x + (pixel_x_start / tile_size)
+    right = tile_x + ((pixel_x_end + 1) / tile_size)
+    top = tile_y + (pixel_y / tile_size)
+    bottom = tile_y + ((pixel_y + 1) / tile_size)
+    west = slippy_tile_x_to_lon(left, zoom)
+    east = slippy_tile_x_to_lon(right, zoom)
+    north = slippy_tile_y_to_lat(top, zoom)
+    south = slippy_tile_y_to_lat(bottom, zoom)
+    return [
+        [west, south],
+        [west, north],
+        [east, north],
+        [east, south],
+        [west, south],
+    ]
+
+
+@lru_cache(maxsize=256)
+def build_burnt_area_locator_geojson_cached(
+    tiles_root: str,
+    dataset_version: str,
+    nominal_date: str,
+    source_zoom: int,
+) -> dict:
+    zoom_dir = Path(tiles_root) / dataset_version / nominal_date / str(source_zoom)
+    features = []
+    total_pixels = 0
+    total_runs = 0
+
+    if zoom_dir.is_dir():
+        for x_dir in sorted(path for path in zoom_dir.iterdir() if path.is_dir() and path.name.isdigit()):
+            tile_x = int(x_dir.name)
+            for tile_path in sorted(
+                path
+                for path in x_dir.iterdir()
+                if path.is_file() and path.suffix.lower() == ".png" and path.stem.isdigit()
+            ):
+                tile_y = int(tile_path.stem)
+                with Image.open(tile_path) as image:
+                    rgba = image.convert("RGBA")
+                    alpha = rgba.getchannel("A")
+                    alpha_pixels = alpha.load()
+                    tile_size = alpha.width
+                    tile_polygons = []
+                    tile_pixels = 0
+                    tile_runs = 0
+
+                    for pixel_y in range(alpha.height):
+                        pixel_x = 0
+                        while pixel_x < tile_size:
+                            if alpha_pixels[pixel_x, pixel_y] <= 0:
+                                pixel_x += 1
+                                continue
+                            pixel_x_start = pixel_x
+                            while pixel_x + 1 < tile_size and alpha_pixels[pixel_x + 1, pixel_y] > 0:
+                                pixel_x += 1
+                            tile_polygons.append(
+                                [
+                                    build_burnt_area_locator_ring(
+                                        tile_x,
+                                        tile_y,
+                                        source_zoom,
+                                        pixel_y,
+                                        pixel_x_start,
+                                        pixel_x,
+                                        tile_size,
+                                    )
+                                ]
+                            )
+                            run_pixels = pixel_x - pixel_x_start + 1
+                            tile_pixels += run_pixels
+                            tile_runs += 1
+                            pixel_x += 1
+
+                if not tile_polygons:
+                    continue
+
+                total_pixels += tile_pixels
+                total_runs += tile_runs
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "dataset_version": dataset_version,
+                            "nominal_date": nominal_date,
+                            "source_zoom": source_zoom,
+                            "tile_x": tile_x,
+                            "tile_y": tile_y,
+                            "run_count": tile_runs,
+                            "pixel_count": tile_pixels,
+                        },
+                        "geometry": {
+                            "type": "MultiPolygon",
+                            "coordinates": tile_polygons,
+                        },
+                    }
+                )
+
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "dataset_version": dataset_version,
+            "nominal_date": nominal_date,
+            "source_zoom": source_zoom,
+            "tile_feature_count": len(features),
+            "pixel_count": total_pixels,
+            "run_count": total_runs,
+        },
+        "features": features,
+    }
 
 # AEMET: parseo CAP 
 NS = "urn:oasis:names:tc:emergency:cap:1.2"
@@ -175,6 +904,7 @@ FIRMS_API_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 FIRMS_DAY_RANGE = 1
 FIRMS_VIIRS_SOURCES = ("VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT", "VIIRS_SNPP_NRT")
 FIRMS_OPTIONAL_SOURCES = ("MODIS_NRT",)
+FIRMS_HTTP_TRUST_ENV_SEQUENCE = (False, True, False)
 FIRMS_QUERY_AREAS = (
     ("peninsula_balears_ceuta_melilla", "-10.0,35.0,4.6,44.2"),
     ("canarias", "-18.5,27.5,-13.0,29.6"),
@@ -1006,14 +1736,30 @@ def _format_acq_datetime_utc(acq_date: str, acq_time: str) -> str:
     return f"{acq_date}T{time[:2]}:{time[2:]}:00Z"
 
 async def fetch_firms_csv(
-    client: httpx.AsyncClient,
     source: str,
     area_coordinates: str,
 ) -> str:
     url = f"{FIRMS_API_BASE}/{settings.firms_map_key}/{source}/{area_coordinates}/{FIRMS_DAY_RANGE}"
-    r = await client.get(url)
-    r.raise_for_status()
-    return r.text
+    last_transport_error = None
+    total_attempts = len(FIRMS_HTTP_TRUST_ENV_SEQUENCE)
+
+    for attempt_number, trust_env in enumerate(FIRMS_HTTP_TRUST_ENV_SEQUENCE, start=1):
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True, trust_env=trust_env) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                return r.text
+        except httpx.HTTPStatusError:
+            raise
+        except httpx.TransportError as exc:
+            last_transport_error = exc
+            if attempt_number >= total_attempts:
+                break
+            await asyncio.sleep(0.4 * attempt_number)
+
+    if last_transport_error is not None:
+        raise last_transport_error
+    raise RuntimeError(f"No se pudo consultar FIRMS para {source}")
 
 def parse_firms_csv(text: str, source: str, area_name: str) -> tuple[list[dict], int]:
     fires = []
@@ -1070,21 +1816,14 @@ async def fetch_spain_hotspots() -> list[dict]:
         for source in firms_sources()
         for area_name, area_coordinates in FIRMS_QUERY_AREAS
     ]
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True, trust_env=False) as client:
-        results = await asyncio.gather(
-            *[
-                fetch_firms_csv(client, source, area_coordinates)
-                for source, _, area_coordinates in requests
-            ],
-            return_exceptions=True,
-        )
-
     fires = []
     excluded = 0
     errors = []
-    for (source, area_name, _), result in zip(requests, results):
-        if isinstance(result, Exception):
-            errors.append(f"{source}/{area_name}: {result}")
+    for source, area_name, area_coordinates in requests:
+        try:
+            result = await fetch_firms_csv(source, area_coordinates)
+        except Exception as exc:
+            errors.append(f"{source}/{area_name}: {exc}")
             continue
         try:
             parsed, parsed_excluded = parse_firms_csv(result, source, area_name)
@@ -1201,18 +1940,54 @@ async def get_fires(response: Response):
         raise HTTPException(status_code=502, detail=f"Error consultando NASA FIRMS: {exc}") from exc
     return fires_cache
  
+def compute_alert_status_counts(reference_time: datetime | None = None) -> dict[str, int]:
+    current_time = reference_time or datetime.now()
+    active = 0
+    upcoming = 0
+    expired = 0
+
+    for alert in alerts_cache:
+        try:
+            onset = datetime.fromisoformat(alert["onset"])
+            expires = datetime.fromisoformat(alert["expires"])
+        except Exception:
+            continue
+        if expires < current_time:
+            expired += 1
+        elif onset <= current_time:
+            active += 1
+        else:
+            upcoming += 1
+
+    return {
+        "active": active,
+        "upcoming": upcoming,
+        "expired": expired,
+        "total": active + upcoming,
+    }
+
 @app.get("/api/stats")
 def get_stats():
     """Estadísticas básicas de los datos cargados."""
+    current_time = datetime.now()
+    alert_counts = compute_alert_status_counts(current_time)
     level_count      = {}
     fire_level_count = {}
     for a in alerts_cache:
+        try:
+            if datetime.fromisoformat(a["expires"]) < current_time:
+                continue
+        except Exception:
+            continue
         level_count[a["level"]] = level_count.get(a["level"], 0) + 1
     for f in fires_cache:
         fire_level_count[f["level"]] = fire_level_count.get(f["level"], 0) + 1
     return {
         "alerts": {
-            "total":     len(alerts_cache),
+            "total":     alert_counts["total"],
+            "active":    alert_counts["active"],
+            "upcoming":  alert_counts["upcoming"],
+            "expired":   alert_counts["expired"],
             "por_nivel": level_count,
         },
         "fires": {
@@ -1221,6 +1996,94 @@ def get_stats():
             "frp_max":   max((f["frp"] for f in fires_cache), default=0),
         },
     }
+
+@app.get("/api/layers/burnt-area")
+def get_burnt_area_layer_metadata():
+    """Metadatos de la capa temporal diaria de burnt area."""
+    data = build_burnt_area_layer_metadata()
+    return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/burnt-area/timeline")
+def get_burnt_area_timeline(
+    dataset_version: str = Query(BURNT_AREA_PREFERRED_VERSION, alias="version"),
+    delivery_format: str = Query(BURNT_AREA_PREFERRED_FORMAT, alias="format"),
+    date_from: str | None = Query(BURNT_AREA_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(BURNT_AREA_DEFAULT_DATE_TO),
+):
+    """Timeline diaria disponible para la capa temporal de burnt area."""
+    validate_burnt_area_variant(dataset_version, delivery_format)
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_burnt_area_timeline_payload(
+        dataset_version,
+        delivery_format,
+        normalized_date_from,
+        normalized_date_to,
+    )
+    return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/burnt-area/stats/daily")
+def get_burnt_area_daily_stats(
+    dataset_version: str = Query(BURNT_AREA_PREFERRED_VERSION, alias="version"),
+    delivery_format: str = Query(BURNT_AREA_PREFERRED_FORMAT, alias="format"),
+    date_from: str | None = Query(BURNT_AREA_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(BURNT_AREA_DEFAULT_DATE_TO),
+):
+    """Serie diaria de estadisticas publicadas de burnt area."""
+    validate_burnt_area_variant(dataset_version, delivery_format)
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_burnt_area_daily_stats_payload(
+        dataset_version,
+        delivery_format,
+        normalized_date_from,
+        normalized_date_to,
+    )
+    return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/burnt-area/tiles/{dataset_version}/{nominal_date}/{z:int}/{x:int}/{y:int}.png")
+def get_burnt_area_tile(dataset_version: str, nominal_date: str, z: int, x: int, y: int):
+    """Tesela PNG local de burnt area para una fecha concreta.
+
+    Mientras no existan teselas locales generadas, responde PNG transparente
+    para que el cliente pueda inicializar la capa temporal sin romper el visor.
+    """
+    validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
+
+    tile_path = resolve_burnt_area_tile_path(dataset_version, normalized_date, z, x, y)
+    if tile_path.is_file():
+        return FileResponse(tile_path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+    return Response(
+        content=BURNT_AREA_TRANSPARENT_PNG,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Burnt-Area-Status": "missing-local-tile",
+        },
+    )
+
+
+@app.get("/api/burnt-area/locator/{dataset_version}/{nominal_date}")
+def get_burnt_area_locator(
+    dataset_version: str,
+    nominal_date: str,
+    source_zoom: int = Query(10),
+):
+    """Vector localizador aproximado derivado de las PNG no vacias para destacar el raster."""
+    validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    normalized_zoom = validate_burnt_area_zoom_level(source_zoom)
+    data = build_burnt_area_locator_geojson_cached(
+        settings.burnt_area_tiles_root,
+        dataset_version,
+        normalized_date,
+        normalized_zoom,
+    )
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
  
 @app.get("/api/landcover")
 def get_landcover():

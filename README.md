@@ -9,6 +9,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 - Mapa interactivo con Leaflet, filtros por nivel y tipo de aviso, timeline y listado lateral.
 - Capas WMS externas de EFFIS/Copernicus, inundaciones y CORINE Land Cover.
 - Capa CORINE 2018 filtrada servida como `vector tiles (MVT)` desde `PostgreSQL + PostGIS`.
+- Base de capa temporal diaria de `burnt area` Copernicus CLMS con metadata, timeline propia y endpoint de teselas locales por fecha.
 - Script auxiliar para generar `data/nucleos.geojson` con núcleos de población del IGN.
 - Script auxiliar para generar `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson` con focos activos EFFIS/Copernicus vectorizados desde teselas WMTS.
 
@@ -96,6 +97,68 @@ docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/inges
 
 La guía completa de primera carga, validaciones y recargas está en [infra/ingest/README.md](infra/ingest/README.md).
 
+La nueva capa temporal diaria de `burnt area` se apoya en el catálogo Copernicus CLMS, ya sea como `all.zip` o como carpeta extraída, y en una timeline propia del visor:
+
+1. Asegura las estructuras nuevas en PostgreSQL/PostGIS:
+
+```bash
+docker compose up -d postgres
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/006_burnt_area_source.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/007_burnt_area_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/008_burnt_area_pub.sql
+```
+
+2. Importa el catálogo diario a `source`:
+
+```bash
+venv\Scripts\python.exe infra/ingest/import_burnt_area_catalog.py
+```
+
+3. Consolida `core`:
+
+```bash
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_burnt_area_core.sql
+```
+
+4. Descarga a disco local los TIFF diarios del producto `v4/cog`:
+
+```bash
+venv\Scripts\python.exe infra/ingest/download_burnt_area_daily_sources.py --dataset-version v4 --delivery-format cog --date-from 2025-05-01 --date-to 2025-08-31
+```
+
+5. Procesa los días del estudio desde la copia local, recorta a España, genera teselas PNG y escribe manifiestos diarios:
+
+```bash
+docker compose --profile tools run --rm gdal python3 /work/infra/ingest/process_burnt_area_daily.py --dataset-version v4 --delivery-format cog --date-from 2025-05-01 --date-to 2025-08-31 --skip-remote
+```
+
+6. Publica en PostgreSQL el estado local y la estadística diaria de España:
+
+```bash
+venv\Scripts\python.exe infra/ingest/publish_burnt_area_manifests.py --dataset-version v4 --delivery-format cog --date-from 2025-05-01 --date-to 2025-08-31
+```
+
+Si no defines `BURNT_AREA_CATALOG_ROOT`, el backend intenta localizar la carpeta `data/copernicus/data_burnt_areas`. Si tampoco existe, cae a `BURNT_AREA_CATALOG_ZIP`, `data-store/files/...` o `~/Downloads/all.zip`.
+
+Para descargar los `COG` remotos durante la ingesta necesitas credenciales CDSE en `.env`:
+
+```bash
+CDSE_USERNAME=
+CDSE_PASSWORD=
+```
+
+O bien claves S3 ya generadas:
+
+```bash
+CDSE_S3_ACCESS_KEY=
+CDSE_S3_SECRET_KEY=
+CDSE_S3_ENDPOINT=eodata.dataspace.copernicus.eu
+```
+
+En `v4/cog` cada día se publica como un prefijo S3 con cuatro TIFF (`BF`, `CP`, `DOB`, `LFP`). El downloader los guarda en `data/copernicus/burnt_area/raw/...`, el procesado local monta un `VRT` por día y desde ahí genera el recorte a España, las teselas PNG y la estadística diaria.
+
+El procesado diario usa `DOB == día seleccionado` para publicar la evolución diaria. La acumulada queda preparada en el mismo script con `--mode cumulative`, aunque el visor sigue conectado por defecto a la variante diaria.
+
 Para generar núcleos de población desde la API-Features del IGN:
 
 ```bash
@@ -147,6 +210,10 @@ http://127.0.0.1:8000
 - `GET /api/alerts`: avisos meteorológicos cargados desde AEMET.
 - `GET /api/fires`: focos de incendio recientes cargados en vivo desde NASA FIRMS al abrir o recargar el visor.
 - `GET /api/stats`: resumen básico de avisos y focos por nivel.
+- `GET /api/layers/burnt-area`: metadata de la capa temporal diaria de áreas quemadas.
+- `GET /api/burnt-area/timeline?version=v4&format=cog&date_from=2025-05-01&date_to=2025-08-31`: fechas disponibles para la barra temporal propia.
+- `GET /api/burnt-area/stats/daily?version=v4&format=cog&date_from=2025-05-01&date_to=2025-08-31`: serie diaria de estadísticas publicadas o placeholder si aún no se han calculado.
+- `GET /api/burnt-area/tiles/{version}/{date}/{z}/{x}/{y}.png`: teselas PNG locales por día; mientras no existan, devuelve una tesela transparente.
 - `GET /api/landcover`: `FeatureCollection` GeoJSON agregado desde `pub.landcover_filtered`.
 - `GET /api/layers/landcover`: metadatos de la capa publicada.
 - `GET /api/landcover/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales `MVT` para render principal de landcover.

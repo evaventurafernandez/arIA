@@ -10,6 +10,9 @@ Este directorio contiene la base del entorno Docker para la PoC de `landcover`.
 - `infra/postgres/initdb/003_landcover_core.sql`: catalogo semantico y estructura canonica de `core` para landcover.
 - `infra/postgres/initdb/004_landcover_pub.sql`: publicacion derivada `pub.landcover_filtered` para explotacion.
 - `infra/postgres/initdb/005_landcover_mvt.sql`: publicacion derivada `pub.landcover_mvt_source` para vector tiles MVT.
+- `infra/postgres/initdb/006_burnt_area_source.sql`: catalogo diario `source` de burnt area Copernicus CLMS.
+- `infra/postgres/initdb/007_burnt_area_core.sql`: estructura canonica `core` por dia, version y formato de burnt area.
+- `infra/postgres/initdb/008_burnt_area_pub.sql`: publicacion ligera de disponibilidad y tabla de estadisticas diarias de burnt area.
 
 ## Estructura base
 

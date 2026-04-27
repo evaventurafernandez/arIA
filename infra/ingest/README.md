@@ -2,6 +2,15 @@
 
 Esta guía describe el flujo vigente para cargar y publicar `landcover` en PostgreSQL/PostGIS a partir del `FileGDB` de CORINE.
 
+Además, el repositorio incorpora ya el pipeline base de `burnt area` diario para Copernicus CLMS:
+
+- `source.burnt_area_catalog_item`
+- `core.burnt_area_daily_file`
+- `pub.burnt_area_daily_file_catalog`
+- `pub.burnt_area_daily_stat`
+
+La ingesta puede trabajar con `all.zip` o con la carpeta extraída `data/copernicus/data_burnt_areas`, consolidar una fila por día/version/formato y completar después el tramo raster con recorte a España, teselas PNG locales y estadística diaria país.
+
 ## Resultado final de la carga
 
 Una ejecución completa deja actualizados estos niveles:

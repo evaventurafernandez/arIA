@@ -70,6 +70,10 @@ resetBtn.onAdd = () => {
     // Desactivar CORINE
     if (corineLayer) { map.removeLayer(corineLayer); }
     corineVisible = false;
+    // Desactivar burnt area diaria
+    const chkBurntArea = document.getElementById('chk-burnt_area_daily');
+    if (chkBurntArea) chkBurntArea.checked = false;
+    toggleBurntAreaLayer(false);
     // Mantener las capas esenciales activas en la vista inicial.
     showAlerts = true;
     showFires = true;
@@ -94,6 +98,15 @@ const EFFIS_URL = 'https://maps.effis.emergency.copernicus.eu/effis';
 const EFFIS_FIRES_URL = '/api/effis/wmts';
 const SPAIN_BOUNDARY_URL = '/api/boundaries/spain';
 const TODAY     = new Date().toISOString().split('T')[0];
+const BURNT_AREA_LAYER_METADATA_URL = '/api/layers/burnt-area';
+const BURNT_AREA_DEFAULT_VERSION = 'v4';
+const BURNT_AREA_DEFAULT_FORMAT = 'cog';
+const BURNT_AREA_DEFAULT_DATE_FROM = '2025-05-01';
+const BURNT_AREA_DEFAULT_DATE_TO = '2025-08-31';
+const BURNT_AREA_TILE_OPACITY = 0.92;
+const BURNT_AREA_MAX_NATIVE_ZOOM = 10;
+const BURNT_AREA_DETAIL_RASTER_MIN_ZOOM = 11;
+const BURNT_AREA_LOCATOR_SOURCE_ZOOM = 10;
 
 const WMS_DEFS = {
   effis_fires: {
@@ -138,12 +151,28 @@ const WMS_DEFS = {
 const wmsActive = {};
 const SPAIN_BOUNDS = L.latLngBounds([27.5, -18.5], [43.9, 4.5]);
 const WMS_LAYER_PANE = 'wmsLayerPane';
+const BURNT_AREA_LOCATOR_PANE = 'burntAreaLocatorPane';
 const CORINE_SELECTION_PANE = 'corineSelectionPane';
 let spainBoundaryData = null;
 let spainBoundaryPromise = null;
+let burntAreaLayer = null;
+let burntAreaLocatorLayer = null;
+let burntAreaLocatorCache = new Map();
+let burntAreaLocatorCachePromise = null;
+let burntAreaLocatorKey = null;
+let burntAreaVisible = false;
+let burntAreaMetadata = null;
+let burntAreaTimeline = [];
+let burntAreaTimelineIndex = 0;
+let burntAreaLoadingPromise = null;
+let burntAreaError = null;
+let burntAreaPlayInterval = null;
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
+map.createPane(BURNT_AREA_LOCATOR_PANE);
+map.getPane(BURNT_AREA_LOCATOR_PANE).style.zIndex = 285;
+map.getPane(BURNT_AREA_LOCATOR_PANE).style.pointerEvents = 'none';
 map.createPane(CORINE_SELECTION_PANE);
 map.getPane(CORINE_SELECTION_PANE).style.zIndex = 460;
 map.getPane(CORINE_SELECTION_PANE).style.pointerEvents = 'none';
@@ -885,6 +914,7 @@ let fireLayers   = [];
 let showAlerts   = true;
 let showFires    = true;
 let activeList   = 'alerts';
+let alertsListView = 'all';
 let activeLevels = new Set(['Rojo','Naranja','Amarillo','Verde']);
 let activeEvent  = 'all';
 let firesError   = null;
@@ -977,21 +1007,430 @@ async function fetchJson(url) {
   return r.json();
 }
 
+function buildBurntAreaTimelineUrl() {
+  const params = new URLSearchParams({
+    version: BURNT_AREA_DEFAULT_VERSION,
+    format: BURNT_AREA_DEFAULT_FORMAT,
+    date_from: BURNT_AREA_DEFAULT_DATE_FROM,
+    date_to: BURNT_AREA_DEFAULT_DATE_TO,
+  });
+  return `/api/burnt-area/timeline?${params.toString()}`;
+}
+
+function buildBurntAreaTileUrl(dateString) {
+  return `/api/burnt-area/tiles/${BURNT_AREA_DEFAULT_VERSION}/${dateString}/{z}/{x}/{y}.png`;
+}
+
+function buildBurntAreaLocatorUrl(dateString, sourceZoom) {
+  const params = new URLSearchParams({ source_zoom: String(sourceZoom) });
+  return `/api/burnt-area/locator/${BURNT_AREA_DEFAULT_VERSION}/${dateString}?${params.toString()}`;
+}
+
+function formatBurntAreaDate(dateString) {
+  const dateValue = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(dateValue.getTime())) return dateString;
+  return dateValue.toLocaleDateString('es-ES', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatBurntAreaSurface(areaHa) {
+  const value = Number(areaHa);
+  if (!Number.isFinite(value)) return null;
+  const maxDigits = value >= 1000 ? 0 : value >= 100 ? 1 : 2;
+  return `${new Intl.NumberFormat('es-ES', { maximumFractionDigits: maxDigits }).format(value)} ha`;
+}
+
+function resolveBurntAreaLocatorSourceZoom(mapZoom = map.getZoom()) {
+  return BURNT_AREA_LOCATOR_SOURCE_ZOOM;
+}
+
+function shouldDisplayBurntAreaLocator(mapZoom = map.getZoom()) {
+  return mapZoom < BURNT_AREA_DETAIL_RASTER_MIN_ZOOM;
+}
+
+function resolveBurntAreaRasterOpacity(mapZoom = map.getZoom()) {
+  return mapZoom >= BURNT_AREA_DETAIL_RASTER_MIN_ZOOM ? BURNT_AREA_TILE_OPACITY : 0;
+}
+
+function updateBurntAreaSurfaceUI(item) {
+  const areaEl = document.getElementById('ba-area');
+  if (!areaEl) return;
+  if (!item) {
+    areaEl.dataset.state = 'nodata';
+    areaEl.textContent = '--';
+    return;
+  }
+
+  const formattedSurface = formatBurntAreaSurface(item.burned_area_ha);
+  if (formattedSurface === null) {
+    areaEl.dataset.state = 'nodata';
+    areaEl.textContent = 's/d';
+    return;
+  }
+
+  if (Number(item.burned_area_ha) <= 0) {
+    areaEl.dataset.state = 'zero';
+    areaEl.textContent = '0 ha';
+    return;
+  }
+
+  areaEl.dataset.state = 'active';
+  areaEl.textContent = formattedSurface;
+}
+
+function getBurntAreaLocatorStyle() {
+  const mapZoom = map.getZoom();
+  const weight = mapZoom >= 10 ? 1.6 : mapZoom >= 8 ? 2.2 : 2.8;
+  const fillOpacity = mapZoom >= 10 ? 0.2 : mapZoom >= 8 ? 0.24 : 0.28;
+  return {
+    pane: BURNT_AREA_LOCATOR_PANE,
+    color: '#6e2300',
+    weight,
+    opacity: 0.92,
+    fillColor: '#c24a00',
+    fillOpacity,
+    lineJoin: 'round',
+    className: 'burnt-area-locator-shape',
+    interactive: false,
+  };
+}
+
+function getBurntAreaInitialTimelineIndex() {
+  const firstPublishedIndex = burntAreaTimeline.findIndex(item => item.has_local_tiles);
+  return firstPublishedIndex >= 0 ? firstPublishedIndex : 0;
+}
+
+function setBurntAreaTimelineNote(message, isError = false) {
+  const note = document.getElementById('ba-note');
+  if (!note) return;
+  note.textContent = message;
+  note.style.color = isError ? '#ff9786' : '#cbb6ad';
+}
+
+function refreshBurntAreaTimelineNote() {
+  if (burntAreaError) {
+    setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${burntAreaError}`, true);
+    return;
+  }
+
+  if (!burntAreaTimeline.length) {
+    setBurntAreaTimelineNote('No hay fechas disponibles para la ventana temporal configurada.', true);
+    return;
+  }
+
+  const publishedCount = burntAreaTimeline.filter(item => item.has_local_tiles).length;
+  if (!publishedCount) {
+    setBurntAreaTimelineNote(
+      `Catalogo listo: ${burntAreaTimeline.length} dias. Aun no hay teselas locales generadas para mostrar el raster.`
+    );
+    return;
+  }
+
+  const currentItem = burntAreaTimeline[burntAreaTimelineIndex] || burntAreaTimeline[0];
+  if (currentItem && !currentItem.has_local_tiles) {
+    setBurntAreaTimelineNote(`La fecha ${currentItem.date} no tiene teselas locales.`);
+    return;
+  }
+
+  setBurntAreaTimelineNote(
+    `Catalogo listo: ${burntAreaTimeline.length} dias. ${publishedCount} dias con teselas locales publicadas.`
+  );
+}
+
+function updateBurntAreaTimelineUI() {
+  const panel = document.getElementById('burnt-area-timeline');
+  const slider = document.getElementById('ba-slider');
+  const dateEl = document.getElementById('ba-datetime');
+  const rangeStartEl = document.getElementById('ba-range-start');
+  const rangeEndEl = document.getElementById('ba-range-end');
+  const playBtn = document.getElementById('ba-play');
+  if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn) return;
+
+  panel.hidden = !burntAreaVisible;
+  playBtn.classList.toggle('playing', Boolean(burntAreaPlayInterval));
+  playBtn.innerHTML = burntAreaPlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
+  refreshBurntAreaTimelineNote();
+
+  if (!burntAreaTimeline.length) {
+    slider.min = 0;
+    slider.max = 0;
+    slider.value = 0;
+    dateEl.textContent = '--';
+    updateBurntAreaSurfaceUI(null);
+    rangeStartEl.textContent = BURNT_AREA_DEFAULT_DATE_FROM;
+    rangeEndEl.textContent = BURNT_AREA_DEFAULT_DATE_TO;
+    return;
+  }
+
+  const currentItem = burntAreaTimeline[burntAreaTimelineIndex] || burntAreaTimeline[0];
+  slider.min = 0;
+  slider.max = Math.max(0, burntAreaTimeline.length - 1);
+  slider.value = String(burntAreaTimelineIndex);
+  dateEl.textContent = formatBurntAreaDate(currentItem.date);
+  updateBurntAreaSurfaceUI(currentItem);
+  rangeStartEl.textContent = burntAreaTimeline[0].date;
+  rangeEndEl.textContent = burntAreaTimeline[burntAreaTimeline.length - 1].date;
+}
+
+function ensureBurntAreaLocatorLayer() {
+  if (burntAreaLocatorLayer) return burntAreaLocatorLayer;
+  burntAreaLocatorLayer = L.geoJSON(null, {
+    pane: BURNT_AREA_LOCATOR_PANE,
+    style: () => getBurntAreaLocatorStyle(),
+    interactive: false,
+  });
+  return burntAreaLocatorLayer;
+}
+
+function refreshBurntAreaLocatorStyle() {
+  if (!burntAreaLocatorLayer) return;
+  burntAreaLocatorLayer.setStyle(getBurntAreaLocatorStyle());
+}
+
+function refreshBurntAreaRasterPresentation() {
+  if (!burntAreaLayer) return;
+  burntAreaLayer.setOpacity(resolveBurntAreaRasterOpacity());
+}
+
+function clearBurntAreaLocatorLayer() {
+  burntAreaLocatorKey = null;
+  if (burntAreaLocatorLayer) {
+    burntAreaLocatorLayer.clearLayers();
+    if (map.hasLayer(burntAreaLocatorLayer)) map.removeLayer(burntAreaLocatorLayer);
+  }
+}
+
+async function syncBurntAreaLocatorForCurrentView(forceReload = false) {
+  if (!burntAreaVisible || !burntAreaTimeline.length) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  if (!shouldDisplayBurntAreaLocator()) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  const currentItem = burntAreaTimeline[burntAreaTimelineIndex];
+  if (!currentItem || !currentItem.has_local_tiles) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  const sourceZoom = resolveBurntAreaLocatorSourceZoom();
+  const cacheKey = `${currentItem.date}:${sourceZoom}`;
+  const layer = ensureBurntAreaLocatorLayer();
+  refreshBurntAreaLocatorStyle();
+
+  if (!forceReload && burntAreaLocatorKey === cacheKey && map.hasLayer(layer)) {
+    return;
+  }
+
+  if (burntAreaLocatorCache.has(cacheKey)) {
+    burntAreaLocatorKey = cacheKey;
+    layer.clearLayers();
+    layer.addData(burntAreaLocatorCache.get(cacheKey));
+    if (!map.hasLayer(layer)) layer.addTo(map);
+    return;
+  }
+
+  const requestKey = cacheKey;
+  burntAreaLocatorCachePromise = fetchJson(buildBurntAreaLocatorUrl(currentItem.date, sourceZoom))
+    .then(data => {
+      burntAreaLocatorCache.set(requestKey, data);
+      if (!burntAreaVisible || burntAreaTimeline[burntAreaTimelineIndex]?.date !== currentItem.date) return;
+      if (resolveBurntAreaLocatorSourceZoom() !== sourceZoom) return;
+      burntAreaLocatorKey = requestKey;
+      layer.clearLayers();
+      layer.addData(data);
+      if (!map.hasLayer(layer)) layer.addTo(map);
+      refreshBurntAreaLocatorStyle();
+    })
+    .catch(error => {
+      console.error('No se pudo cargar el localizador de burnt area:', error);
+      if (burntAreaLocatorKey === requestKey) clearBurntAreaLocatorLayer();
+    })
+    .finally(() => {
+      if (burntAreaLocatorCachePromise && burntAreaLocatorKey === requestKey) {
+        burntAreaLocatorCachePromise = null;
+      } else if (!burntAreaLocatorKey) {
+        burntAreaLocatorCachePromise = null;
+      }
+    });
+  return burntAreaLocatorCachePromise;
+}
+
+function ensureBurntAreaLayer(dateString) {
+  const url = buildBurntAreaTileUrl(dateString);
+  if (!burntAreaLayer) {
+    burntAreaLayer = L.tileLayer(url, {
+      pane: WMS_LAYER_PANE,
+      opacity: resolveBurntAreaRasterOpacity(),
+      bounds: SPAIN_BOUNDS,
+      minZoom: 4,
+      maxNativeZoom: Number(burntAreaMetadata?.tile_max_zoom) || BURNT_AREA_MAX_NATIVE_ZOOM,
+      maxZoom: 18,
+      className: 'burnt-area-tile',
+      attribution: 'Copernicus CLMS Burnt Area',
+    });
+  } else {
+    burntAreaLayer.setUrl(url, false);
+  }
+  refreshBurntAreaRasterPresentation();
+  if (burntAreaVisible && !map.hasLayer(burntAreaLayer)) {
+    burntAreaLayer.addTo(map);
+  }
+}
+
+function stopBurntAreaPlayback() {
+  if (!burntAreaPlayInterval) return;
+  clearInterval(burntAreaPlayInterval);
+  burntAreaPlayInterval = null;
+  updateBurntAreaTimelineUI();
+}
+
+function setBurntAreaFrame(index) {
+  if (!burntAreaTimeline.length) return;
+  burntAreaTimelineIndex = Math.max(0, Math.min(index, burntAreaTimeline.length - 1));
+  const currentItem = burntAreaTimeline[burntAreaTimelineIndex];
+  ensureBurntAreaLayer(currentItem.date);
+  void syncBurntAreaLocatorForCurrentView(true);
+  updateBurntAreaTimelineUI();
+}
+
+function resetBurntAreaTimeline() {
+  stopBurntAreaPlayback();
+  setBurntAreaFrame(0);
+}
+
+function toggleBurntAreaPlayback() {
+  if (!burntAreaTimeline.length) return;
+  if (burntAreaPlayInterval) {
+    stopBurntAreaPlayback();
+    return;
+  }
+  burntAreaPlayInterval = setInterval(() => {
+    const nextIndex = burntAreaTimelineIndex + 1;
+    if (nextIndex >= burntAreaTimeline.length) {
+      stopBurntAreaPlayback();
+      return;
+    }
+    setBurntAreaFrame(nextIndex);
+  }, 650);
+  updateBurntAreaTimelineUI();
+}
+
+async function ensureBurntAreaTimelineLoaded() {
+  if (burntAreaMetadata && burntAreaTimeline.length) {
+    return {
+      layer_id: burntAreaMetadata.layer_id,
+      dataset_version: BURNT_AREA_DEFAULT_VERSION,
+      delivery_format: BURNT_AREA_DEFAULT_FORMAT,
+      date_from: BURNT_AREA_DEFAULT_DATE_FROM,
+      date_to: BURNT_AREA_DEFAULT_DATE_TO,
+      date_count: burntAreaTimeline.length,
+      dates: burntAreaTimeline,
+    };
+  }
+  if (burntAreaLoadingPromise) return burntAreaLoadingPromise;
+  burntAreaLoadingPromise = (async () => {
+    burntAreaMetadata = await fetchJson(BURNT_AREA_LAYER_METADATA_URL);
+    const timelinePayload = await fetchJson(buildBurntAreaTimelineUrl());
+    burntAreaTimeline = Array.isArray(timelinePayload.dates) ? timelinePayload.dates : [];
+    burntAreaTimelineIndex = getBurntAreaInitialTimelineIndex();
+    updateBurntAreaTimelineUI();
+    return timelinePayload;
+  })()
+    .catch(error => {
+      burntAreaError = error.message;
+      burntAreaTimeline = [];
+      setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${error.message}`, true);
+      updateBurntAreaTimelineUI();
+      throw error;
+    })
+    .finally(() => {
+      burntAreaLoadingPromise = null;
+    });
+  return burntAreaLoadingPromise;
+}
+
+async function toggleBurntAreaLayer(enabled) {
+  burntAreaVisible = enabled;
+  if (!enabled) {
+    stopBurntAreaPlayback();
+    if (burntAreaLayer && map.hasLayer(burntAreaLayer)) map.removeLayer(burntAreaLayer);
+    clearBurntAreaLocatorLayer();
+    updateBurntAreaTimelineUI();
+    return;
+  }
+
+  try {
+    await ensureBurntAreaTimelineLoaded();
+    burntAreaError = null;
+    if (!burntAreaTimeline.length) {
+      updateBurntAreaTimelineUI();
+      return;
+    }
+    setBurntAreaFrame(burntAreaTimelineIndex);
+  } catch (_) {
+    updateBurntAreaTimelineUI();
+  }
+}
+
 function fetchSpainHotspots() {
   return fetchJson('/api/fires');
 }
 
+function getAlertCountsByTime(alerts, referenceTime = (tlCurrent || new Date())) {
+  let active = 0;
+  let upcoming = 0;
+  let expired = 0;
+
+  alerts.forEach(a => {
+    const onset = new Date(a.onset);
+    const expires = new Date(a.expires);
+    if (expires < referenceTime) {
+      expired += 1;
+    } else if (onset <= referenceTime) {
+      active += 1;
+    } else {
+      upcoming += 1;
+    }
+  });
+
+  return {
+    active,
+    upcoming,
+    expired,
+    total: active + upcoming,
+  };
+}
+
 function buildClientStats(alerts, fires) {
+  const referenceTime = tlCurrent || new Date();
+  const alertCounts = getAlertCountsByTime(alerts, referenceTime);
   const levelCount = {};
   const fireLevelCount = {};
-  alerts.forEach(a => {
-    levelCount[a.level] = (levelCount[a.level] || 0) + 1;
-  });
+  alerts
+    .filter(a => new Date(a.expires) >= referenceTime)
+    .forEach(a => {
+      levelCount[a.level] = (levelCount[a.level] || 0) + 1;
+    });
   fires.forEach(f => {
     fireLevelCount[f.level] = (fireLevelCount[f.level] || 0) + 1;
   });
   return {
-    alerts: { total: alerts.length, por_nivel: levelCount },
+    alerts: {
+      total: alertCounts.total,
+      active: alertCounts.active,
+      upcoming: alertCounts.upcoming,
+      expired: alertCounts.expired,
+      por_nivel: levelCount,
+    },
     fires: {
       total: fires.length,
       por_nivel: fireLevelCount,
@@ -1047,17 +1486,18 @@ async function init() {
   firesData = [];
   firesError = null;
   firesLoading = true;
-  const stats = buildClientStats(alertsData, firesData);
-  updateStatsBar(stats);
 
   populateEventFilter();
   initTimeline();
+  const stats = buildClientStats(alertsData, firesData);
+  updateStatsBar(stats);
   const chkF = document.getElementById('chk-fires');
   if (chkF) chkF.checked = true;
   renderAlerts();
   renderFires();
   renderList();
   void loadFiresInBackground();
+  void ensureBurntAreaTimelineLoaded().catch(() => {});
 }
 
 // Filtrado
@@ -1068,6 +1508,36 @@ function getFilteredAlerts() {
     const eventOk = activeEvent === 'all' || normalizeEvent(a.event) === activeEvent;
     return inTime && levelOk && eventOk;
   });
+}
+
+function getVisibleAlerts(alerts) {
+  return alertsListView === 'active'
+    ? alerts.filter(isActive)
+    : alerts;
+}
+
+function syncAlertsListViewControls(nActive, nUpcoming) {
+  const toggle = document.getElementById('alerts-view-toggle');
+  const count = document.getElementById('list-count');
+  const summaryText = alertsListView === 'active'
+    ? `${nActive} act.`
+    : (nUpcoming > 0 ? `${nActive} act. · ${nUpcoming} próx.` : `${nActive} act.`);
+  const summaryTitle = alertsListView === 'active'
+    ? `${nActive} avisos activos para este filtro`
+    : (nUpcoming > 0 ? `${nActive} avisos activos y ${nUpcoming} próximos para este filtro` : `${nActive} avisos activos para este filtro`);
+
+  if (count) {
+    count.textContent = summaryText;
+    count.title = summaryTitle;
+  }
+
+  if (toggle) {
+    toggle.title = alertsListView === 'active'
+      ? 'Mostrando solo los avisos activos en la lista y en el mapa'
+      : 'Mostrando avisos activos y próximos en la lista y en el mapa';
+    toggle.classList.toggle('is-active', alertsListView === 'active');
+    toggle.setAttribute('aria-pressed', alertsListView === 'active' ? 'true' : 'false');
+  }
 }
 
 const FLOOD_KEYWORDS = ['lluvia','precipitación','tormenta','costero','nieve derretida','deshielo','vaguada','dana'];
@@ -1095,7 +1565,11 @@ function populateEventFilter() {
 }
 
 // Renderizar
-function renderAll() { renderAlerts(); renderList(); }
+function renderAll() {
+  updateStatsBar(buildClientStats(alertsData, firesData));
+  renderAlerts();
+  renderList();
+}
 
 function renderAlerts() {
   Object.values(alertLayers).forEach(l => map.removeLayer(l));
@@ -1103,7 +1577,8 @@ function renderAlerts() {
   if (!showAlerts) return;
 
   const filtered = getFilteredAlerts();
-  filtered.forEach(a => {
+  const visible = getVisibleAlerts(filtered);
+  visible.forEach(a => {
     if (!a.polygon) return;
     const coords = parsePolygon(a.polygon);
     if (!coords.length) return;
@@ -1136,7 +1611,7 @@ function renderAlerts() {
     alertLayers[a.id] = poly;
   });
 
-  if (activeList === 'alerts') updateListHeader(filtered);
+  if (getListMode() === 'alerts') updateListHeader(filtered);
 }
 
 function escapeHtml(value) {
@@ -1152,6 +1627,26 @@ function formatFireTime(f) {
   if (!f.acq_time) return '';
   const time = String(f.acq_time).padStart(4, '0');
   return time.replace(/(\d{2})(\d{2})/, '$1:$2');
+}
+
+function getRenderableFires(fires = firesData) {
+  return (Array.isArray(fires) ? fires : [])
+    .filter(f => Number.isFinite(Number(f.latitude)) && Number.isFinite(Number(f.longitude)))
+    .sort((a, b) => (Number(b.frp) || 0) - (Number(a.frp) || 0));
+}
+
+function getListMode() {
+  if (activeList === 'alerts' && showAlerts) return 'alerts';
+  if (activeList === 'fires' && showFires) return 'fires';
+  if (showFires && !showAlerts) return 'fires';
+  if (showAlerts && !showFires) return 'alerts';
+  if (showAlerts) return 'alerts';
+  if (showFires) return 'fires';
+  return 'none';
+}
+
+function formatFireCount(count) {
+  return `${count} ${count === 1 ? 'foco' : 'focos'}`;
 }
 
 function buildFireLandcoverMarkup(fire) {
@@ -1254,7 +1749,7 @@ function renderFires() {
   fireLayers = [];
   if (!showFires) return;
   if (firesError) {
-    if (activeList === 'fires') updateListHeader([]);
+    if (getListMode() === 'fires') updateListHeader([]);
     return;
   }
 
@@ -1284,7 +1779,7 @@ function renderFires() {
     fireLayers.push(circle);
   });
 
-  if (activeList === 'fires') updateListHeader(firesData);
+  if (getListMode() === 'fires') updateListHeader(getRenderableFires(firesData));
 }
 
 // Sidebar 
@@ -1297,15 +1792,27 @@ function highlightCard(id) {
 function renderList() {
   const el    = document.getElementById('main-list');
   const title = document.getElementById('list-title');
+  const listMode = getListMode();
 
-  if (activeList === 'alerts') {
+  if (listMode === 'none') {
+    title.textContent = 'Resultados';
+    updateListHeader([]);
+    el.innerHTML = '<div class="empty">Activa Avisos AEMET o Focos NASA FIRMS para ver resultados</div>';
+    return;
+  }
+
+  if (listMode === 'alerts') {
     title.textContent = 'Avisos';
     const filtered = getFilteredAlerts();
+    const visible = getVisibleAlerts(filtered);
     updateListHeader(filtered);
-    if (!filtered.length) { el.innerHTML = '<div class="empty">Sin avisos para este filtro</div>'; return; }
+    if (!visible.length) {
+      el.innerHTML = `<div class="empty">${alertsListView === 'active' ? 'Sin avisos activos para este filtro' : 'Sin avisos para este filtro'}</div>`;
+      return;
+    }
 
     const order = { Rojo:0, Naranja:1, Amarillo:2, Verde:3 };
-    const sorted = [...filtered].sort((a,b) => {
+    const sorted = [...visible].sort((a,b) => {
       const da = isActive(a)?0:1, db = isActive(b)?0:1;
       return da !== db ? da-db : (order[a.level]||9)-(order[b.level]||9);
     });
@@ -1331,7 +1838,8 @@ function renderList() {
 
   } else {
     title.textContent = 'Focos de incendio';
-    updateListHeader(firesData);
+    const visibleFires = getRenderableFires(firesData);
+    updateListHeader(visibleFires);
     if (firesLoading) {
       el.innerHTML = '<div class="empty">Cargando focos FIRMS...</div>';
       return;
@@ -1340,13 +1848,8 @@ function renderList() {
       el.innerHTML = `<div class="empty">No se pudieron cargar los focos FIRMS: ${escapeHtml(firesError)}</div>`;
       return;
     }
-    if (!firesData.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
-
-    const sorted = firesData
-      .filter(f => Number.isFinite(Number(f.latitude)) && Number.isFinite(Number(f.longitude)))
-      .sort((a,b) => b.frp - a.frp);
-    if (!sorted.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
-    el.innerHTML = sorted.map(f => {
+    if (!visibleFires.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
+    el.innerHTML = visibleFires.map(f => {
       const hora = formatFireTime(f);
       const lat = Number(f.latitude);
       const lon = Number(f.longitude);
@@ -1365,13 +1868,27 @@ function renderList() {
 }
 
 function updateListHeader(data) {
-  const count = document.getElementById('list-count');
-  if (activeList === 'alerts' && Array.isArray(data)) {
+  const alertsControl = document.getElementById('alerts-view-control');
+  const firesCount = document.getElementById('fires-list-count');
+  const listMode = getListMode();
+
+  if (listMode === 'alerts' && Array.isArray(data)) {
     const nA = data.filter(isActive).length;
     const nF = data.filter(a => !isActive(a)).length;
-    count.textContent = `${nA} activos · ${nF} próximos`;
+    if (alertsControl) alertsControl.hidden = false;
+    if (firesCount) firesCount.hidden = true;
+    syncAlertsListViewControls(nA, nF);
+  } else if (listMode === 'fires') {
+    if (alertsControl) alertsControl.hidden = true;
+    if (firesCount) {
+      firesCount.hidden = false;
+      const total = Array.isArray(data) ? data.length : getRenderableFires().length;
+      firesCount.textContent = formatFireCount(total);
+      firesCount.title = `${formatFireCount(total)} en la lista`;
+    }
   } else {
-    count.textContent = `(${Array.isArray(data) ? data.length : 0})`;
+    if (alertsControl) alertsControl.hidden = true;
+    if (firesCount) firesCount.hidden = true;
   }
 }
 
@@ -1443,6 +1960,14 @@ document.getElementById('event-select').addEventListener('change', e => {
   activeEvent = e.target.value; renderAll();
 });
 
+const alertsViewToggle = document.getElementById('alerts-view-toggle');
+if (alertsViewToggle) {
+  alertsViewToggle.addEventListener('click', () => {
+    alertsListView = alertsListView === 'active' ? 'all' : 'active';
+    renderAll();
+  });
+}
+
 // Utilidades
 function parsePolygon(str) {
   return str.trim().split(' ').map(p => {
@@ -1463,6 +1988,39 @@ function fmtDate(iso) {
   const el = document.getElementById('chk-' + key);
   if (el) el.addEventListener('change', e => toggleWMS(key, e.target.checked));
 });
+
+map.on('zoomend', () => {
+  if (!burntAreaVisible) return;
+  refreshBurntAreaRasterPresentation();
+  refreshBurntAreaLocatorStyle();
+  void syncBurntAreaLocatorForCurrentView();
+});
+
+const chkBurntArea = document.getElementById('chk-burnt_area_daily');
+if (chkBurntArea) {
+  chkBurntArea.addEventListener('change', e => {
+    void toggleBurntAreaLayer(e.target.checked);
+  });
+}
+
+const burntAreaSlider = document.getElementById('ba-slider');
+if (burntAreaSlider) {
+  burntAreaSlider.addEventListener('input', e => {
+    const nextIndex = Number(e.target.value);
+    stopBurntAreaPlayback();
+    setBurntAreaFrame(nextIndex);
+  });
+}
+
+const burntAreaPlayBtn = document.getElementById('ba-play');
+if (burntAreaPlayBtn) {
+  burntAreaPlayBtn.addEventListener('click', () => toggleBurntAreaPlayback());
+}
+
+const burntAreaResetBtn = document.getElementById('ba-reset');
+if (burntAreaResetBtn) {
+  burntAreaResetBtn.addEventListener('click', () => resetBurntAreaTimeline());
+}
  
 const chkAlerts = document.getElementById('chk-alerts');
 const chkFires  = document.getElementById('chk-fires');
