@@ -182,17 +182,11 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
   filter:
     saturate(1.95)
     brightness(0.98)
-    contrast(1.26)
-    drop-shadow(0 0 1px rgba(107, 29, 0, 0.82))
-    drop-shadow(0 0 5px rgba(194, 74, 0, 0.74))
-    drop-shadow(0 0 12px rgba(255, 111, 0, 0.28));
+    contrast(1.26);
 }
 
 .burnt-area-locator-shape {
-  filter:
-    drop-shadow(0 0 2px rgba(84, 23, 0, 0.92))
-    drop-shadow(0 0 8px rgba(194, 74, 0, 0.62))
-    drop-shadow(0 0 18px rgba(128, 37, 0, 0.32));
+  filter: none;
 }
 
 /* Sidebar */

@@ -109,9 +109,7 @@ const BURNT_AREA_DEFAULT_VERSION = 'v4';
 const BURNT_AREA_DEFAULT_FORMAT = 'cog';
 const BURNT_AREA_DEFAULT_DATE_FROM = '2025-05-01';
 const BURNT_AREA_DEFAULT_DATE_TO = '2025-08-31';
-const BURNT_AREA_TILE_OPACITY = 0.92;
 const BURNT_AREA_MAX_NATIVE_ZOOM = 10;
-const BURNT_AREA_DETAIL_RASTER_MIN_ZOOM = 11;
 const BURNT_AREA_LOCATOR_SOURCE_ZOOM = 10;
 
 const WMS_DEFS = {
@@ -1136,16 +1134,16 @@ function formatBurntAreaSurface(areaHa) {
   return `${new Intl.NumberFormat('es-ES', { maximumFractionDigits: maxDigits }).format(value)} ha`;
 }
 
-function resolveBurntAreaLocatorSourceZoom(mapZoom = map.getZoom()) {
+function resolveBurntAreaLocatorSourceZoom() {
   return BURNT_AREA_LOCATOR_SOURCE_ZOOM;
 }
 
-function shouldDisplayBurntAreaLocator(mapZoom = map.getZoom()) {
-  return mapZoom < BURNT_AREA_DETAIL_RASTER_MIN_ZOOM;
+function shouldDisplayBurntAreaLocator() {
+  return true;
 }
 
-function resolveBurntAreaRasterOpacity(mapZoom = map.getZoom()) {
-  return mapZoom >= BURNT_AREA_DETAIL_RASTER_MIN_ZOOM ? BURNT_AREA_TILE_OPACITY : 0;
+function resolveBurntAreaRasterOpacity() {
+  return 0;
 }
 
 function updateBurntAreaSurfaceUI(item) {
@@ -1175,16 +1173,13 @@ function updateBurntAreaSurfaceUI(item) {
 }
 
 function getBurntAreaLocatorStyle() {
-  const mapZoom = map.getZoom();
-  const weight = mapZoom >= 10 ? 1.6 : mapZoom >= 8 ? 2.2 : 2.8;
-  const fillOpacity = mapZoom >= 10 ? 0.2 : mapZoom >= 8 ? 0.24 : 0.28;
   return {
     pane: BURNT_AREA_LOCATOR_PANE,
     color: '#6e2300',
-    weight,
+    weight: 2,
     opacity: 0.92,
     fillColor: '#c24a00',
-    fillOpacity,
+    fillOpacity: 0.24,
     lineJoin: 'round',
     className: 'burnt-area-locator-shape',
     interactive: false,
@@ -1285,7 +1280,15 @@ function refreshBurntAreaLocatorStyle() {
 
 function refreshBurntAreaRasterPresentation() {
   if (!burntAreaLayer) return;
-  burntAreaLayer.setOpacity(resolveBurntAreaRasterOpacity());
+  const opacity = resolveBurntAreaRasterOpacity();
+  burntAreaLayer.setOpacity(opacity);
+  if (!burntAreaVisible || opacity <= 0) {
+    if (map.hasLayer(burntAreaLayer)) map.removeLayer(burntAreaLayer);
+    return;
+  }
+  if (!map.hasLayer(burntAreaLayer)) {
+    burntAreaLayer.addTo(map);
+  }
 }
 
 function clearBurntAreaLocatorLayer() {
@@ -1373,9 +1376,6 @@ function ensureBurntAreaLayer(dateString) {
     burntAreaLayer.setUrl(url, false);
   }
   refreshBurntAreaRasterPresentation();
-  if (burntAreaVisible && !map.hasLayer(burntAreaLayer)) {
-    burntAreaLayer.addTo(map);
-  }
 }
 
 function stopBurntAreaPlayback() {
