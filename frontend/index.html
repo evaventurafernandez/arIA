@@ -37,16 +37,17 @@
 
       <!-- Leyenda WMS flotante -->
       <div id="wms-legend" style="display:none"></div>
+    </div>
 
-      <!-- Timeline propia de areas quemadas -->
-      <div id="burnt-area-timeline" hidden>
+    <!-- Barra temporal -->
+    <div id="timelines-bar" hidden>
+      <div id="burnt-area-timeline" class="timeline-panel" hidden>
         <div id="burnt-area-timeline-top">
           <div id="burnt-area-timeline-label">
             <span id="ba-badge">BA DIARIO</span>
-            <div id="ba-meta">
-              <span id="ba-datetime">--</span>
-              <span id="ba-area" data-state="nodata">--</span>
-            </div>
+            <span id="ba-datetime">--</span>
+            <span id="ba-area" data-state="nodata">--</span>
+            <span id="ba-inline-note" hidden></span>
           </div>
           <div id="burnt-area-timeline-controls">
             <button id="ba-play" type="button">&#9654; Play</button>
@@ -60,23 +61,22 @@
         </div>
         <div id="ba-note">Preparando catalogo diario...</div>
       </div>
-    </div>
 
-    <!-- Barra temporal -->
-    <div id="timeline">
-      <div id="timeline-top">
-        <div id="timeline-label">
-          <span id="tl-badge">AHORA</span>
-          <span id="tl-datetime"></span>
+      <div id="timeline" class="timeline-panel">
+        <div id="timeline-top">
+          <div id="timeline-label">
+            <span id="tl-badge">AHORA</span>
+            <span id="tl-datetime"></span>
+          </div>
+          <div id="timeline-controls">
+            <button id="tl-play" onclick="togglePlay()">&#9654; Play</button>
+            <button id="tl-reset" onclick="resetTimeline()">&#8635; Ahora</button>
+          </div>
         </div>
-        <div id="timeline-controls">
-          <button id="tl-play" onclick="togglePlay()">&#9654; Play</button>
-          <button id="tl-reset" onclick="resetTimeline()">&#8635; Ahora</button>
-        </div>
+        <input type="range" id="tl-slider" min="0" max="100" value="0"
+               oninput="onSliderInput(this.value)"/>
+        <div id="tl-ticks"></div>
       </div>
-      <input type="range" id="tl-slider" min="0" max="100" value="0"
-             oninput="onSliderInput(this.value)"/>
-      <div id="tl-ticks"></div>
     </div>
   </div>
 

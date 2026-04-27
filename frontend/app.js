@@ -1012,8 +1012,35 @@ let firesLoading = false;
 
 // ── Timeline ──────────────────────────────────────────────────────────────
 let tlMin = null, tlMax = null, tlCurrent = null, playInterval = null;
+let timelineBarSplitLayout = null;
 const STEP_MS = 60 * 60 * 1000;
 const TICK_MS = 700;
+
+function isTimelineBarSplitLayout() {
+  return document.getElementById('timelines-bar')?.classList.contains('is-split');
+}
+
+function syncTimelineBarVisibility() {
+  const bar = document.getElementById('timelines-bar');
+  const alertsTimelineEl = document.getElementById('timeline');
+  const burntAreaTimelineEl = document.getElementById('burnt-area-timeline');
+  if (!bar || !alertsTimelineEl || !burntAreaTimelineEl) return;
+
+  const showAlertsTimeline = Boolean(showAlerts);
+  const showBurntAreaTimeline = Boolean(burntAreaVisible);
+  const visibleCount = Number(showAlertsTimeline) + Number(showBurntAreaTimeline);
+  const splitLayout = visibleCount > 1;
+
+  alertsTimelineEl.hidden = !showAlertsTimeline;
+  burntAreaTimelineEl.hidden = !showBurntAreaTimeline;
+  bar.hidden = visibleCount === 0;
+  bar.classList.toggle('is-split', splitLayout);
+
+  if (timelineBarSplitLayout !== splitLayout) {
+    timelineBarSplitLayout = splitLayout;
+    if (tlMin && tlMax) buildTicks();
+  }
+}
 
 function initTimeline() {
   tlMin = tlCurrent = new Date();
@@ -1024,23 +1051,41 @@ function initTimeline() {
   slider.min = 0;
   slider.max = Math.max(1, Math.floor((tlMax - tlMin) / STEP_MS));
   slider.value = 0;
+  syncTimelineBarVisibility();
   updateTimelineUI();
   buildTicks();
 }
 
 function buildTicks() {
   const c = document.getElementById('tl-ticks');
+  if (!c || !tlMin || !tlMax) return;
   c.innerHTML = '';
+  const splitLayout = isTimelineBarSplitLayout();
   const hrs = (tlMax - tlMin) / 3600000;
-  const every = hrs <= 48 ? 6 : 24;
+  const every = hrs <= 48 ? (splitLayout ? 12 : 6) : 24;
   let t = new Date(tlMin);
   while (t <= tlMax) {
     const s = document.createElement('span');
-    s.textContent = t.toLocaleDateString('es-ES',{day:'2-digit',month:'short'})
-      + ' ' + t.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+    const dateLabel = t.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+    if (splitLayout) {
+      const timeLabel = every < 24
+        ? t.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+        : '';
+      s.textContent = timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
+    } else {
+      s.textContent = dateLabel
+        + ' ' + t.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+    }
     c.appendChild(s);
     t = new Date(t.getTime() + every * 3600000);
   }
+}
+
+function updateTimelinePlayButton() {
+  const btn = document.getElementById('tl-play');
+  if (!btn) return;
+  btn.innerHTML = playInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
+  btn.classList.toggle('playing', Boolean(playInterval));
 }
 
 function updateTimelineUI() {
@@ -1051,6 +1096,8 @@ function updateTimelineUI() {
   document.getElementById('tl-datetime').textContent =
     tlCurrent.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'short'})
     + ' · ' + tlCurrent.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+  updateTimelinePlayButton();
+  syncTimelineBarVisibility();
 }
 
 function onSliderInput(val) {
@@ -1059,24 +1106,29 @@ function onSliderInput(val) {
   renderAll();
 }
 
+function stopTimelinePlayback() {
+  if (!playInterval) return;
+  clearInterval(playInterval);
+  playInterval = null;
+  updateTimelinePlayButton();
+}
+
 function togglePlay() {
-  const btn = document.getElementById('tl-play');
   if (playInterval) {
-    clearInterval(playInterval); playInterval = null;
-    btn.innerHTML = '&#9654; Play'; btn.classList.remove('playing');
+    stopTimelinePlayback();
   } else {
-    btn.innerHTML = '&#9646;&#9646; Pausa'; btn.classList.add('playing');
     playInterval = setInterval(() => {
       const s = document.getElementById('tl-slider');
       const next = parseInt(s.value) + 1;
-      if (next > parseInt(s.max)) { togglePlay(); return; }
+      if (next > parseInt(s.max)) { stopTimelinePlayback(); return; }
       s.value = next; onSliderInput(next);
     }, TICK_MS);
+    updateTimelinePlayButton();
   }
 }
 
 function resetTimeline() {
-  if (playInterval) togglePlay();
+  stopTimelinePlayback();
   document.getElementById('tl-slider').value = 0;
   onSliderInput(0);
 }
@@ -1172,6 +1224,18 @@ function updateBurntAreaSurfaceUI(item) {
   areaEl.textContent = formattedSurface;
 }
 
+function setBurntAreaInlineNote(message = '') {
+  const inlineNote = document.getElementById('ba-inline-note');
+  if (!inlineNote) return;
+  if (!message) {
+    inlineNote.hidden = true;
+    inlineNote.textContent = '';
+    return;
+  }
+  inlineNote.hidden = false;
+  inlineNote.textContent = message;
+}
+
 function getBurntAreaLocatorStyle() {
   return {
     pane: BURNT_AREA_LOCATOR_PANE,
@@ -1191,53 +1255,64 @@ function getBurntAreaInitialTimelineIndex() {
   return firstPublishedIndex >= 0 ? firstPublishedIndex : 0;
 }
 
-function setBurntAreaTimelineNote(message, isError = false) {
+function setBurntAreaTimelineNote(message, tone = 'info') {
   const note = document.getElementById('ba-note');
   if (!note) return;
+  if (!message) {
+    note.hidden = true;
+    note.textContent = '';
+    note.dataset.state = '';
+    return;
+  }
+  note.hidden = false;
+  note.dataset.state = tone;
   note.textContent = message;
-  note.style.color = isError ? '#ff9786' : '#cbb6ad';
+  note.style.color = tone === 'error'
+    ? '#ff9786'
+    : (tone === 'warning' ? '#f0bc8d' : '#cbb6ad');
 }
 
 function refreshBurntAreaTimelineNote() {
+  setBurntAreaInlineNote('');
+
   if (burntAreaError) {
-    setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${burntAreaError}`, true);
+    setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${burntAreaError}`, 'error');
     return;
   }
 
   if (!burntAreaTimeline.length) {
-    setBurntAreaTimelineNote('No hay fechas disponibles para la ventana temporal configurada.', true);
+    setBurntAreaTimelineNote('No hay fechas disponibles para la ventana temporal configurada.', 'error');
     return;
   }
 
   const publishedCount = burntAreaTimeline.filter(item => item.has_local_tiles).length;
   if (!publishedCount) {
     setBurntAreaTimelineNote(
-      `Catalogo listo: ${burntAreaTimeline.length} dias. Aun no hay teselas locales generadas para mostrar el raster.`
+      `Catalogo listo: ${burntAreaTimeline.length} dias. Aun no hay teselas locales generadas para mostrar el raster.`,
+      'warning'
     );
     return;
   }
 
   const currentItem = burntAreaTimeline[burntAreaTimelineIndex] || burntAreaTimeline[0];
   if (currentItem && !currentItem.has_local_tiles) {
-    setBurntAreaTimelineNote(`La fecha ${currentItem.date} no tiene teselas locales.`);
+    setBurntAreaInlineNote('Sin teselas locales');
+    setBurntAreaTimelineNote('');
     return;
   }
 
-  setBurntAreaTimelineNote(
-    `Catalogo listo: ${burntAreaTimeline.length} dias. ${publishedCount} dias con teselas locales publicadas.`
-  );
+  setBurntAreaTimelineNote('');
 }
 
 function updateBurntAreaTimelineUI() {
-  const panel = document.getElementById('burnt-area-timeline');
   const slider = document.getElementById('ba-slider');
   const dateEl = document.getElementById('ba-datetime');
   const rangeStartEl = document.getElementById('ba-range-start');
   const rangeEndEl = document.getElementById('ba-range-end');
   const playBtn = document.getElementById('ba-play');
-  if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn) return;
+  syncTimelineBarVisibility();
+  if (!slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn) return;
 
-  panel.hidden = !burntAreaVisible;
   playBtn.classList.toggle('playing', Boolean(burntAreaPlayInterval));
   playBtn.innerHTML = burntAreaPlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
   refreshBurntAreaTimelineNote();
@@ -1440,7 +1515,7 @@ async function ensureBurntAreaTimelineLoaded() {
     .catch(error => {
       burntAreaError = error.message;
       burntAreaTimeline = [];
-      setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${error.message}`, true);
+      setBurntAreaTimelineNote(`No se pudo cargar la capa temporal: ${error.message}`, 'error');
       updateBurntAreaTimelineUI();
       throw error;
     })
@@ -1452,6 +1527,7 @@ async function ensureBurntAreaTimelineLoaded() {
 
 async function toggleBurntAreaLayer(enabled) {
   burntAreaVisible = enabled;
+  updateBurntAreaTimelineUI();
   if (!enabled) {
     stopBurntAreaPlayback();
     if (burntAreaLayer && map.hasLayer(burntAreaLayer)) map.removeLayer(burntAreaLayer);
@@ -2023,7 +2099,10 @@ function zoomToFire(lat, lon, id) {
 // Toggles capas
 function toggleLayer(type, enabled) {
   if (type === 'alerts') {
-    showAlerts = enabled; renderAlerts();
+    showAlerts = enabled;
+    if (!enabled) stopTimelinePlayback();
+    syncTimelineBarVisibility();
+    renderAlerts();
     if (enabled) activeList = 'alerts';
     else if (showFires) activeList = 'fires';
   }
