@@ -5,3 +5,7 @@ pydantic-settings
 python-dotenv
 pillow
 shapely
+pyproj
+psycopg[binary]
+psycopg-pool
+boto3
