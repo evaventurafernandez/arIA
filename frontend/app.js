@@ -78,6 +78,9 @@ resetBtn.onAdd = () => {
     const chkFirmsHistory = document.getElementById('chk-firms_history');
     if (chkFirmsHistory) chkFirmsHistory.checked = false;
     toggleHistoricalFiresLayer(false);
+    const chkAemetMaxTempHistory = document.getElementById('chk-aemet_max_temp_history');
+    if (chkAemetMaxTempHistory) chkAemetMaxTempHistory.checked = false;
+    toggleAemetMaxTempLayer(false);
     // Mantener las capas esenciales activas en la vista inicial.
     showAlerts = true;
     showFires = true;
@@ -121,6 +124,11 @@ const FIRMS_HISTORY_FEATURES_URL = '/api/firms/history/features';
 const FIRMS_HISTORY_DEFAULT_DATE_FROM = '2025-05-01';
 const FIRMS_HISTORY_DEFAULT_DATE_TO = '2025-08-31';
 const FIRMS_HISTORY_FETCH_LIMIT = 20000;
+const AEMET_MAX_TEMP_LAYER_METADATA_URL = '/api/layers/aemet-max-temperature';
+const AEMET_MAX_TEMP_TIMELINE_URL = '/api/aemet/max-temperature/timeline';
+const AEMET_MAX_TEMP_DEFAULT_DATE_FROM = '2025-05-01';
+const AEMET_MAX_TEMP_DEFAULT_DATE_TO = '2025-08-31';
+const AEMET_MAX_TEMP_MVT_LAYER_NAME = 'aemet_max_temp';
 const HISTORICAL_DATA_FETCH_OPTIONS = { cache: 'force-cache' };
 
 const WMS_DEFS = {
@@ -167,6 +175,7 @@ const wmsActive = {};
 const SPAIN_BOUNDS = L.latLngBounds([27.5, -18.5], [43.9, 4.5]);
 const WMS_LAYER_PANE = 'wmsLayerPane';
 const BURNT_AREA_LOCATOR_PANE = 'burntAreaLocatorPane';
+const AEMET_MAX_TEMP_PANE = 'aemetMaxTempPane';
 const CORINE_SELECTION_PANE = 'corineSelectionPane';
 let spainBoundaryData = null;
 let spainBoundaryPromise = null;
@@ -196,12 +205,21 @@ let historicalFiresFrameLoading = false;
 let historicalFiresRequestToken = 0;
 const historicalFiresDataCache = new Map();
 const historicalFiresRenderer = L.canvas({ padding: 0.5 });
+let aemetMaxTempVisible = false;
+let aemetMaxTempMetadata = null;
+let aemetMaxTempTimeline = [];
+let aemetMaxTempTimelineByDate = new Map();
+let aemetMaxTempLoadingPromise = null;
+let aemetMaxTempError = null;
+let aemetMaxTempLayer = null;
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
 map.createPane(BURNT_AREA_LOCATOR_PANE);
 map.getPane(BURNT_AREA_LOCATOR_PANE).style.zIndex = 285;
 map.getPane(BURNT_AREA_LOCATOR_PANE).style.pointerEvents = 'none';
+map.createPane(AEMET_MAX_TEMP_PANE);
+map.getPane(AEMET_MAX_TEMP_PANE).style.zIndex = 330;
 map.createPane(CORINE_SELECTION_PANE);
 map.getPane(CORINE_SELECTION_PANE).style.zIndex = 460;
 map.getPane(CORINE_SELECTION_PANE).style.pointerEvents = 'none';
@@ -557,7 +575,8 @@ function updateLegend() {
   const wmsKeys = Object.keys(wmsActive);
   const showCorine = corineVisible && corineLayer;
   const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
-  if (!wmsKeys.length && !showCorine && !showFirms) { el.style.display = 'none'; return; }
+  const showAemetMaxTemp = aemetMaxTempVisible && !aemetMaxTempError;
+  if (!wmsKeys.length && !showCorine && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
  
   el.style.display = 'block';
 
@@ -613,8 +632,25 @@ function updateLegend() {
       <div class="leg-note">${CORINE_LEGEND.note}</div>
     </div>`;
   })() : '';
+
+  const aemetMaxTempHtml = showAemetMaxTemp ? `<div class="leg-block">
+      <div class="leg-title">Avisos AEMET temperaturas máximas</div>
+      <div class="leg-item">
+        <span class="leg-dot" style="background:#FFD700"></span>
+        <span class="leg-label">Amarillo</span>
+      </div>
+      <div class="leg-item">
+        <span class="leg-dot" style="background:#FFA500"></span>
+        <span class="leg-label">Naranja</span>
+      </div>
+      <div class="leg-item">
+        <span class="leg-dot" style="background:#CC0000"></span>
+        <span class="leg-label">Rojo</span>
+      </div>
+      <div class="leg-note">Capa histórica diaria filtrada a AT;Temperaturas máximas.</div>
+    </div>` : '';
  
-  el.innerHTML = firmsHtml + wmsHtml + corineHtml;
+  el.innerHTML = firmsHtml + aemetMaxTempHtml + wmsHtml + corineHtml;
 }
  
 // CORINE (vector tiles MVT desde backend)
@@ -1549,6 +1585,27 @@ function buildFirmsHistoricalFeaturesUrl(dateString) {
   return `${FIRMS_HISTORY_FEATURES_URL}?${params.toString()}`;
 }
 
+function getAemetMaxTempDateRange() {
+  return {
+    dateFrom: aemetMaxTempMetadata?.default_date_from || AEMET_MAX_TEMP_DEFAULT_DATE_FROM,
+    dateTo: aemetMaxTempMetadata?.default_date_to || AEMET_MAX_TEMP_DEFAULT_DATE_TO,
+  };
+}
+
+function buildAemetMaxTempTimelineUrl() {
+  const { dateFrom, dateTo } = getAemetMaxTempDateRange();
+  const params = new URLSearchParams({
+    date_from: dateFrom,
+    date_to: dateTo,
+  });
+  return `${AEMET_MAX_TEMP_TIMELINE_URL}?${params.toString()}`;
+}
+
+function buildAemetMaxTempTileUrl(dateString) {
+  const params = new URLSearchParams({ warnings_only: 'true' });
+  return `/api/aemet/max-temperature/tiles/${dateString}/{z}/{x}/{y}.mvt?${params.toString()}`;
+}
+
 function formatFirmsHistoricalDate(dateString) {
   const dateValue = new Date(`${dateString}T00:00:00`);
   if (Number.isNaN(dateValue.getTime())) return dateString;
@@ -1564,6 +1621,18 @@ function formatFirmsHistoricalCount(count) {
   const value = Number(count) || 0;
   const formatted = new Intl.NumberFormat('es-ES').format(value);
   return `${formatted} ${value === 1 ? 'foco' : 'focos'}`;
+}
+
+function formatAemetMaxTempCount(count) {
+  const value = Number(count) || 0;
+  const formatted = new Intl.NumberFormat('es-ES').format(value);
+  return `${formatted} ${value === 1 ? 'zona' : 'zonas'}`;
+}
+
+function formatAemetTemperature(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return null;
+  return `${numericValue.toLocaleString('es-ES', { maximumFractionDigits: 1 })} °C`;
 }
 
 function updateHistoricalFiresSummaryUI(item) {
@@ -1757,6 +1826,84 @@ function renderHistoricalFires() {
 
 }
 
+function getAemetMaxTempLevelColor(properties = {}) {
+  return properties.level_color || {
+    Rojo: '#CC0000',
+    Naranja: '#FFA500',
+    Amarillo: '#FFD700',
+    Verde: '#4CAF50',
+  }[properties.level_label] || '#FFD700';
+}
+
+function clearAemetMaxTempLayer() {
+  if (aemetMaxTempLayer && map.hasLayer(aemetMaxTempLayer)) {
+    map.removeLayer(aemetMaxTempLayer);
+  }
+  aemetMaxTempLayer = null;
+}
+
+function buildAemetMaxTempPopupHtml(properties = {}) {
+  const color = getAemetMaxTempLevelColor(properties);
+  const temperature = formatAemetTemperature(properties.temperature_max_c);
+  const probability = properties.probability ? ` · Prob. ${escapeHtml(properties.probability)}` : '';
+  const valueLine = temperature
+    ? `Umbral: <b>${escapeHtml(temperature)}</b>${probability}<br>`
+    : '';
+  return `<b>Aviso AEMET temperaturas máximas</b><br>`+
+    `${escapeHtml(properties.area_name || 'Zona AEMET')}<br>`+
+    `<span style="color:${color}">${escapeHtml(properties.level_label || 'Aviso')}</span><br>`+
+    valueLine+
+    `Válido: ${escapeHtml(properties.onset_at || 'n/d')} - ${escapeHtml(properties.expires_at || 'n/d')}`;
+}
+
+function renderAemetMaxTempForDate(dateString) {
+  clearAemetMaxTempLayer();
+  if (!aemetMaxTempVisible || !dateString || aemetMaxTempError) return;
+
+  const currentItem = aemetMaxTempTimelineByDate.get(dateString);
+  if (!currentItem || Number(currentItem.warning_count) <= 0) return;
+
+  const styleByLayer = {};
+  styleByLayer[AEMET_MAX_TEMP_MVT_LAYER_NAME] = properties => {
+    const color = getAemetMaxTempLevelColor(properties);
+    const rank = Number(properties.level_rank) || 1;
+    return {
+      color,
+      weight: Math.max(1.2, rank + 0.4),
+      opacity: 0.9,
+      fill: true,
+      fillColor: color,
+      fillOpacity: 0.24,
+    };
+  };
+
+  aemetMaxTempLayer = L.vectorGrid.protobuf(buildAemetMaxTempTileUrl(dateString), {
+    rendererFactory: L.canvas.tile,
+    pane: AEMET_MAX_TEMP_PANE,
+    interactive: true,
+    maxNativeZoom: 12,
+    vectorTileLayerStyles: styleByLayer,
+    getFeatureId: feature => feature.properties.feature_id,
+  });
+
+  aemetMaxTempLayer.on('mouseover', event => {
+    const properties = event.layer?.properties || {};
+    event.layer.bindTooltip(
+      `<b>${escapeHtml(properties.area_name || 'Zona AEMET')}</b><br>`+
+      `${escapeHtml(properties.level_label || 'Aviso')} · ${escapeHtml(formatAemetTemperature(properties.temperature_max_c) || 's/d')}`,
+      { sticky: true }
+    ).openTooltip();
+  });
+  aemetMaxTempLayer.on('click', event => {
+    const properties = event.layer?.properties || {};
+    L.popup({ offset: [0, -4] })
+      .setLatLng(event.latlng)
+      .setContent(buildAemetMaxTempPopupHtml(properties))
+      .openOn(map);
+  });
+  aemetMaxTempLayer.addTo(map);
+}
+
 async function loadHistoricalFiresForDate(dateString, forceReload = false) {
   const requestToken = ++historicalFiresRequestToken;
   historicalFiresFrameLoading = true;
@@ -1863,6 +2010,47 @@ async function ensureHistoricalFiresTimelineLoaded() {
   return historicalFiresLoadingPromise;
 }
 
+async function ensureAemetMaxTempTimelineLoaded() {
+  if (aemetMaxTempMetadata && aemetMaxTempTimeline.length) {
+    return {
+      layer_id: aemetMaxTempMetadata.layer_id,
+      date_from: aemetMaxTempMetadata.default_date_from,
+      date_to: aemetMaxTempMetadata.default_date_to,
+      date_count: aemetMaxTempTimeline.length,
+      dates: aemetMaxTempTimeline,
+    };
+  }
+  if (aemetMaxTempLoadingPromise) return aemetMaxTempLoadingPromise;
+  aemetMaxTempLoadingPromise = (async () => {
+    aemetMaxTempMetadata = await fetchJson(AEMET_MAX_TEMP_LAYER_METADATA_URL, HISTORICAL_DATA_FETCH_OPTIONS);
+    const timelinePayload = await fetchJson(buildAemetMaxTempTimelineUrl(), HISTORICAL_DATA_FETCH_OPTIONS);
+    aemetMaxTempMetadata = {
+      ...aemetMaxTempMetadata,
+      layer_id: timelinePayload.layer_id || 'aemet_max_temperature_warnings',
+      default_date_from: timelinePayload.date_from || AEMET_MAX_TEMP_DEFAULT_DATE_FROM,
+      default_date_to: timelinePayload.date_to || AEMET_MAX_TEMP_DEFAULT_DATE_TO,
+    };
+    aemetMaxTempTimeline = Array.isArray(timelinePayload.dates) ? timelinePayload.dates : [];
+    aemetMaxTempTimelineByDate = buildDateItemMap(aemetMaxTempTimeline);
+    rebuildHistoricalTimeline();
+    updateHistoricalTimelineUI();
+    return timelinePayload;
+  })()
+    .catch(error => {
+      aemetMaxTempError = error.message;
+      aemetMaxTempTimeline = [];
+      aemetMaxTempTimelineByDate = new Map();
+      clearAemetMaxTempLayer();
+      rebuildHistoricalTimeline();
+      updateHistoricalTimelineUI();
+      throw error;
+    })
+    .finally(() => {
+      aemetMaxTempLoadingPromise = null;
+    });
+  return aemetMaxTempLoadingPromise;
+}
+
 async function toggleHistoricalFiresLayer(enabled) {
   historicalFiresVisible = enabled;
 
@@ -1896,6 +2084,40 @@ async function toggleHistoricalFiresLayer(enabled) {
   }
 }
 
+async function toggleAemetMaxTempLayer(enabled) {
+  const hadVisibleHistoricalLayers = hasVisibleHistoricalLayers();
+  aemetMaxTempVisible = enabled;
+
+  if (!enabled) {
+    clearAemetMaxTempLayer();
+    aemetMaxTempError = null;
+    if (!burntAreaVisible && !historicalFiresVisible) stopHistoricalTimelinePlayback();
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    updateHistoricalTimelineUI();
+    updateLegend();
+    return;
+  }
+
+  updateLegend();
+  updateHistoricalTimelineUI();
+
+  try {
+    await ensureAemetMaxTempTimelineLoaded();
+    aemetMaxTempError = null;
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    if (!historicalTimeline.length) {
+      updateHistoricalTimelineUI();
+      return;
+    }
+    if (!hadVisibleHistoricalLayers) {
+      historicalTimelineIndex = resolveHistoricalTimelineDefaultIndex();
+    }
+    await setHistoricalTimelineFrame(historicalTimelineIndex);
+  } catch (_) {
+    updateHistoricalTimelineUI();
+  }
+}
+
 function buildDateItemMap(items) {
   return new Map(
     (Array.isArray(items) ? items : [])
@@ -1905,7 +2127,7 @@ function buildDateItemMap(items) {
 }
 
 function hasVisibleHistoricalLayers() {
-  return burntAreaVisible || historicalFiresVisible;
+  return burntAreaVisible || historicalFiresVisible || aemetMaxTempVisible;
 }
 
 function getHistoricalTimelineCurrentDate() {
@@ -1913,15 +2135,27 @@ function getHistoricalTimelineCurrentDate() {
 }
 
 function getHistoricalTimelineDefaultDate() {
+  if (aemetMaxTempVisible) {
+    return aemetMaxTempTimeline.find(item => Number(item.warning_count) > 0)?.date
+      || historicalFiresTimeline[0]?.date
+      || burntAreaTimeline.find(item => item.has_local_tiles)?.date
+      || aemetMaxTempTimeline[0]?.date
+      || burntAreaTimeline[0]?.date
+      || null;
+  }
   if (historicalFiresVisible) {
     return historicalFiresTimeline[0]?.date
       || burntAreaTimeline.find(item => item.has_local_tiles)?.date
+      || aemetMaxTempTimeline.find(item => Number(item.warning_count) > 0)?.date
       || burntAreaTimeline[0]?.date
+      || aemetMaxTempTimeline[0]?.date
       || null;
   }
   return burntAreaTimeline.find(item => item.has_local_tiles)?.date
     || burntAreaTimeline[0]?.date
     || historicalFiresTimeline[0]?.date
+    || aemetMaxTempTimeline.find(item => Number(item.warning_count) > 0)?.date
+    || aemetMaxTempTimeline[0]?.date
     || null;
 }
 
@@ -1938,6 +2172,7 @@ function rebuildHistoricalTimeline(preferredDate = null) {
     new Set([
       ...burntAreaTimeline.map(item => item?.date),
       ...historicalFiresTimeline.map(item => item?.date),
+      ...aemetMaxTempTimeline.map(item => item?.date),
     ].filter(Boolean))
   ).sort((a, b) => a.localeCompare(b));
 
@@ -1956,19 +2191,25 @@ function getHistoricalTimelineBoundaryRange() {
     historicalTimeline[0],
     burntAreaTimeline[0]?.date,
     historicalFiresTimeline[0]?.date,
+    aemetMaxTempTimeline[0]?.date,
     burntAreaMetadata?.default_date_from,
     historicalFiresMetadata?.default_date_from,
+    aemetMaxTempMetadata?.default_date_from,
     BURNT_AREA_DEFAULT_DATE_FROM,
     FIRMS_HISTORY_DEFAULT_DATE_FROM,
+    AEMET_MAX_TEMP_DEFAULT_DATE_FROM,
   ].filter(Boolean).sort((a, b) => a.localeCompare(b));
   const endCandidates = [
     historicalTimeline[historicalTimeline.length - 1],
     burntAreaTimeline[burntAreaTimeline.length - 1]?.date,
     historicalFiresTimeline[historicalFiresTimeline.length - 1]?.date,
+    aemetMaxTempTimeline[aemetMaxTempTimeline.length - 1]?.date,
     burntAreaMetadata?.default_date_to,
     historicalFiresMetadata?.default_date_to,
+    aemetMaxTempMetadata?.default_date_to,
     BURNT_AREA_DEFAULT_DATE_TO,
     FIRMS_HISTORY_DEFAULT_DATE_TO,
+    AEMET_MAX_TEMP_DEFAULT_DATE_TO,
   ].filter(Boolean).sort((a, b) => a.localeCompare(b));
 
   return {
@@ -1985,6 +2226,11 @@ function getBurntAreaCurrentTimelineItem() {
 function getHistoricalFiresCurrentTimelineItem() {
   const currentDate = getHistoricalTimelineCurrentDate();
   return currentDate ? (historicalFiresTimelineByDate.get(currentDate) || null) : null;
+}
+
+function getAemetMaxTempCurrentTimelineItem() {
+  const currentDate = getHistoricalTimelineCurrentDate();
+  return currentDate ? (aemetMaxTempTimelineByDate.get(currentDate) || null) : null;
 }
 
 function setHistoricalTimelineNote(message, isError = false) {
@@ -2068,6 +2314,32 @@ function updateHistoricalFiresSummaryUI(item) {
   });
 }
 
+function updateHistoricalAemetMaxTempSummaryUI(item) {
+  if (!aemetMaxTempVisible) {
+    setHistoricalSummaryState('ht-aemet-summary', { hidden: true });
+    return;
+  }
+  if (aemetMaxTempError) {
+    setHistoricalSummaryState('ht-aemet-summary', { state: 'error', text: 'AEMET error' });
+    return;
+  }
+  if (!item) {
+    setHistoricalSummaryState('ht-aemet-summary', { state: 'nodata', text: 'AEMET s/d' });
+    return;
+  }
+
+  const warningCount = Number(item.warning_count) || 0;
+  if (warningCount <= 0) {
+    setHistoricalSummaryState('ht-aemet-summary', { state: 'zero', text: 'AEMET 0 zonas' });
+    return;
+  }
+  const temperature = formatAemetTemperature(item.max_temperature_c);
+  setHistoricalSummaryState('ht-aemet-summary', {
+    state: 'active',
+    text: `AEMET ${formatAemetMaxTempCount(warningCount)}${temperature ? ` · ${temperature}` : ''}`,
+  });
+}
+
 function refreshHistoricalTimelineNote() {
   if (!hasVisibleHistoricalLayers()) {
     setHistoricalTimelineNote('');
@@ -2077,6 +2349,7 @@ function refreshHistoricalTimelineNote() {
     const errorMessages = [];
     if (burntAreaVisible && burntAreaError) errorMessages.push(`BA: ${burntAreaError}`);
     if (historicalFiresVisible && historicalFiresError) errorMessages.push(`FIRMS: ${historicalFiresError}`);
+    if (aemetMaxTempVisible && aemetMaxTempError) errorMessages.push(`AEMET: ${aemetMaxTempError}`);
     setHistoricalTimelineNote(
       errorMessages.length
         ? errorMessages.join(' · ')
@@ -2153,6 +2426,7 @@ function updateHistoricalTimelineUI() {
 
   updateHistoricalBurntAreaSummaryUI(getBurntAreaCurrentTimelineItem());
   updateHistoricalFiresSummaryUI(getHistoricalFiresCurrentTimelineItem());
+  updateHistoricalAemetMaxTempSummaryUI(getAemetMaxTempCurrentTimelineItem());
   refreshHistoricalTimelineNote();
 
   const boundaryRange = getHistoricalTimelineBoundaryRange();
@@ -2319,6 +2593,7 @@ async function setHistoricalTimelineFrame(index, forceReload = false) {
   historicalTimelineIndex = Math.max(0, Math.min(index, historicalTimeline.length - 1));
   const currentDate = getHistoricalTimelineCurrentDate();
   renderBurntAreaForDate(currentDate, forceReload);
+  renderAemetMaxTempForDate(currentDate);
   updateHistoricalTimelineUI();
   if (historicalFiresVisible) {
     await applyHistoricalFiresForDate(currentDate, forceReload);
@@ -2458,7 +2733,7 @@ async function toggleBurntAreaLayer(enabled) {
   if (!enabled) {
     clearBurntAreaRasterLayer();
     clearBurntAreaLocatorLayer();
-    if (!historicalFiresVisible) stopHistoricalTimelinePlayback();
+    if (!historicalFiresVisible && !aemetMaxTempVisible) stopHistoricalTimelinePlayback();
     rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
     updateHistoricalTimelineUI();
     return;
@@ -2489,7 +2764,7 @@ async function toggleHistoricalFiresLayer(enabled) {
 
   if (!enabled) {
     clearHistoricalFiresFrameState({ cancelPending: true });
-    if (!burntAreaVisible) stopHistoricalTimelinePlayback();
+    if (!burntAreaVisible && !aemetMaxTempVisible) stopHistoricalTimelinePlayback();
     rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
     updateHistoricalTimelineUI();
     return;
@@ -2945,7 +3220,7 @@ function renderList() {
   if (listMode === 'none') {
     title.textContent = 'Resultados';
     updateListHeader([]);
-    el.innerHTML = historicalFiresVisible || burntAreaVisible
+    el.innerHTML = historicalFiresVisible || burntAreaVisible || aemetMaxTempVisible
       ? '<div class="empty">Las capas históricas activas se muestran directamente en el mapa.</div>'
       : '<div class="empty">Activa Avisos AEMET o Focos NASA FIRMS para ver resultados</div>';
     return;
@@ -3164,6 +3439,13 @@ const chkFirmsHistory = document.getElementById('chk-firms_history');
 if (chkFirmsHistory) {
   chkFirmsHistory.addEventListener('change', e => {
     void toggleHistoricalFiresLayer(e.target.checked);
+  });
+}
+
+const chkAemetMaxTempHistory = document.getElementById('chk-aemet_max_temp_history');
+if (chkAemetMaxTempHistory) {
+  chkAemetMaxTempHistory.addEventListener('change', e => {
+    void toggleAemetMaxTempLayer(e.target.checked);
   });
 }
 

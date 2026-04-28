@@ -175,6 +175,26 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
   background: rgba(255, 73, 73, 0.08);
   color: #ffb2a8;
 }
+#ht-aemet-summary[data-state="active"] {
+  border-color: rgba(255, 202, 58, 0.34);
+  background: rgba(255, 202, 58, 0.12);
+  color: #ffe8a3;
+}
+#ht-aemet-summary[data-state="zero"] {
+  border-color: rgba(255, 202, 58, 0.18);
+  background: rgba(255, 202, 58, 0.06);
+  color: #d9c891;
+}
+#ht-aemet-summary[data-state="nodata"] {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #b9bfc9;
+}
+#ht-aemet-summary[data-state="error"] {
+  border-color: rgba(255, 120, 120, 0.32);
+  background: rgba(255, 73, 73, 0.08);
+  color: #ffb2a8;
+}
 #timeline-controls,
 #historical-timeline-controls { display: flex; gap: 6px; }
 #tl-play, #tl-reset,

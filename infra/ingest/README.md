@@ -21,6 +21,52 @@ También incorpora un pipeline histórico diario para focos NASA FIRMS en Españ
 
 El flujo descarga bloques CSV `SP` de `VIIRS_NOAA20_SP` y `VIIRS_SNPP_SP`, conserva los ficheros brutos y sus manifiestos en `data-store/files/raw/nasa/firms/historical`, deduplica en `core` y publica una serie diaria país que mantiene días con `0` focos si la cobertura del día es completa.
 
+El histórico diario de avisos AEMET para temperaturas máximas sigue el mismo patrón `raw -> source -> core -> pub`:
+
+- `source.aemet_warning_download_file`
+- `source.aemet_warning_cap_record`
+- `core.aemet_max_temperature_warning`
+- `pub.aemet_max_temperature_daily_feature`
+- `pub.aemet_max_temperature_daily_stat`
+
+La descarga usa el endpoint oficial de archivo CAP por rango de elaboración, guarda los `tar` brutos y sus manifiestos en `data-store/files/raw/aemet/avisos_cap/archive`, filtra localmente el fenómeno `AT;Temperaturas máximas`, deduplica avisos CAP y publica una capa diaria optimizada para GeoJSON y teselas MVT. La publicación diaria conserva trazabilidad de nivel verde en base de datos, pero el visor consume por defecto solo niveles adversos (`Amarillo`, `Naranja`, `Rojo`).
+
+## Pipeline histórico AEMET temperaturas máximas
+
+1. Asegura las nuevas estructuras:
+
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/012_aemet_warnings_source.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/013_aemet_warnings_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/014_aemet_warnings_pub.sql
+   ```
+
+2. Descarga el histórico bruto. El `lookback` captura avisos válidos al inicio del rango aunque se elaborasen antes:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/download_aemet_warnings_historical_sources.py --date-from 2025-05-01 --date-to 2025-08-31 --elaboration-lookback-days 3 --block-days 2 --sleep-seconds 3 --max-retries 8
+   ```
+
+3. Importa `source` filtrado a `AT;Temperaturas máximas`:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/import_aemet_warnings_source.py --date-from 2025-05-01 --date-to 2025-08-31 --elaboration-lookback-days 3
+   ```
+
+4. Reconstruye `core` y la vista diaria optimizada:
+
+   ```bash
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_pub.sql
+   ```
+
+5. Publica la serie diaria país:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
 ## Pipeline histórico FIRMS
 
 1. Asegura las nuevas estructuras:
