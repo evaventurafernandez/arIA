@@ -10,6 +10,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 - Capas WMS externas de EFFIS/Copernicus, inundaciones y CORINE Land Cover.
 - Capa CORINE 2018 filtrada servida como `vector tiles (MVT)` desde `PostgreSQL + PostGIS`.
 - Base de capa temporal diaria de `burnt area` Copernicus CLMS con metadata, timeline propia y endpoint de teselas locales por fecha.
+- Pipeline histórico diario de focos NASA FIRMS persistido en `PostgreSQL + PostGIS`, con timeline, estadísticas país y GeoJSON por fecha.
 - Script auxiliar para generar `data/nucleos.geojson` con núcleos de población del IGN.
 - Script auxiliar para generar `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson` con focos activos EFFIS/Copernicus vectorizados desde teselas WMTS.
 
@@ -57,6 +58,8 @@ POSTGRES_DB=meteovisor
 POSTGRES_USER=meteovisor
 POSTGRES_PASSWORD=meteovisor
 POSTGRES_PORT=5432
+FIRMS_HISTORICAL_DEFAULT_DATE_FROM=2025-05-01
+FIRMS_HISTORICAL_DEFAULT_DATE_TO=2025-08-31
 ```
 
 `FIRMS_MAP_KEY` es opcional. Si no se informa, la API devolverá una lista vacía de focos de incendio.
@@ -159,6 +162,43 @@ En `v4/cog` cada día se publica como un prefijo S3 con cuatro TIFF (`BF`, `CP`,
 
 El procesado diario usa `DOB == día seleccionado` para publicar la evolución diaria. La acumulada queda preparada en el mismo script con `--mode cumulative`, aunque el visor sigue conectado por defecto a la variante diaria.
 
+El histórico diario de focos NASA FIRMS sigue un patrón similar, pero adaptado a vectoriales y con persistencia directa en PostGIS:
+
+1. Asegura las estructuras del histórico FIRMS:
+
+```bash
+docker compose up -d postgres
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/009_firms_history_source.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/010_firms_history_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/011_firms_history_pub.sql
+```
+
+2. Descarga los bloques históricos `SP` de `VIIRS_NOAA20` y `VIIRS_SNPP` para España:
+
+```bash
+venv\Scripts\python.exe infra/ingest/download_firms_historical_sources.py --date-from 2025-05-01 --date-to 2025-08-31 --block-days 5
+```
+
+3. Importa el `raw` descargado a `source`:
+
+```bash
+venv\Scripts\python.exe infra/ingest/import_firms_historical_source.py --date-from 2025-05-01 --date-to 2025-08-31
+```
+
+4. Reconstruye el nivel canónico deduplicado:
+
+```bash
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_firms_historical_core.sql
+```
+
+5. Publica la serie diaria país, incluidos los días con `0` focos cuando la cobertura de fuentes y regiones está completa:
+
+```bash
+venv\Scripts\python.exe infra/ingest/publish_firms_historical.py --date-from 2025-05-01 --date-to 2025-08-31
+```
+
+Los CSV brutos y sus manifiestos quedan en `data-store/files/raw/nasa/firms/historical/...`. La API histórica resultante se expone en `/api/layers/firms-history`, `/api/firms/history/timeline`, `/api/firms/history/stats/daily` y `/api/firms/history/features?date=YYYY-MM-DD`.
+
 Para generar núcleos de población desde la API-Features del IGN:
 
 ```bash
@@ -214,6 +254,10 @@ http://127.0.0.1:8000
 - `GET /api/burnt-area/timeline?version=v4&format=cog&date_from=2025-05-01&date_to=2025-08-31`: fechas disponibles para la barra temporal propia.
 - `GET /api/burnt-area/stats/daily?version=v4&format=cog&date_from=2025-05-01&date_to=2025-08-31`: serie diaria de estadísticas publicadas o placeholder si aún no se han calculado.
 - `GET /api/burnt-area/tiles/{version}/{date}/{z}/{x}/{y}.png`: teselas PNG locales por día; mientras no existan, devuelve una tesela transparente.
+- `GET /api/layers/firms-history`: metadata del histórico diario FIRMS persistido en PostGIS.
+- `GET /api/firms/history/timeline?date_from=2025-05-01&date_to=2025-08-31`: fechas publicadas del histórico FIRMS con cobertura y conteos diarios.
+- `GET /api/firms/history/stats/daily?date_from=2025-05-01&date_to=2025-08-31`: serie diaria país del histórico FIRMS.
+- `GET /api/firms/history/features?date=2025-08-16&source=VIIRS_NOAA20_SP`: GeoJSON de focos históricos por fecha, con filtro opcional de fuente y `bbox`.
 - `GET /api/landcover`: `FeatureCollection` GeoJSON agregado desde `pub.landcover_filtered`.
 - `GET /api/layers/landcover`: metadatos de la capa publicada.
 - `GET /api/landcover/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales `MVT` para render principal de landcover.

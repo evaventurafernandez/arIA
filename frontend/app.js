@@ -74,6 +74,10 @@ resetBtn.onAdd = () => {
     const chkBurntArea = document.getElementById('chk-burnt_area_daily');
     if (chkBurntArea) chkBurntArea.checked = false;
     toggleBurntAreaLayer(false);
+    // Desactivar histórico FIRMS
+    const chkFirmsHistory = document.getElementById('chk-firms_history');
+    if (chkFirmsHistory) chkFirmsHistory.checked = false;
+    toggleHistoricalFiresLayer(false);
     // Mantener las capas esenciales activas en la vista inicial.
     showAlerts = true;
     showFires = true;
@@ -82,6 +86,7 @@ resetBtn.onAdd = () => {
     const chkFires = document.getElementById('chk-fires');
     if (chkAlerts) chkAlerts.checked = true;
     if (chkFires) chkFires.checked = true;
+    syncTimelinePanelsVisibility();
     if (tlMin) resetTimeline();
     renderAlerts();
     renderFires();
@@ -111,6 +116,12 @@ const BURNT_AREA_DEFAULT_DATE_FROM = '2025-05-01';
 const BURNT_AREA_DEFAULT_DATE_TO = '2025-08-31';
 const BURNT_AREA_MAX_NATIVE_ZOOM = 10;
 const BURNT_AREA_LOCATOR_SOURCE_ZOOM = 10;
+const FIRMS_HISTORY_TIMELINE_URL = '/api/firms/history/timeline';
+const FIRMS_HISTORY_FEATURES_URL = '/api/firms/history/features';
+const FIRMS_HISTORY_DEFAULT_DATE_FROM = '2025-05-01';
+const FIRMS_HISTORY_DEFAULT_DATE_TO = '2025-08-31';
+const FIRMS_HISTORY_FETCH_LIMIT = 20000;
+const HISTORICAL_DATA_FETCH_OPTIONS = { cache: 'force-cache' };
 
 const WMS_DEFS = {
   effis_fires: {
@@ -167,10 +178,24 @@ let burntAreaLocatorKey = null;
 let burntAreaVisible = false;
 let burntAreaMetadata = null;
 let burntAreaTimeline = [];
-let burntAreaTimelineIndex = 0;
+let burntAreaTimelineByDate = new Map();
 let burntAreaLoadingPromise = null;
 let burntAreaError = null;
-let burntAreaPlayInterval = null;
+let historicalFiresVisible = false;
+let historicalFiresMetadata = null;
+let historicalFiresTimeline = [];
+let historicalFiresTimelineByDate = new Map();
+let historicalTimeline = [];
+let historicalTimelineIndex = 0;
+let historicalTimelinePlayInterval = null;
+let historicalFiresData = [];
+let historicalFireLayers = [];
+let historicalFiresLoadingPromise = null;
+let historicalFiresError = null;
+let historicalFiresFrameLoading = false;
+let historicalFiresRequestToken = 0;
+const historicalFiresDataCache = new Map();
+const historicalFiresRenderer = L.canvas({ padding: 0.5 });
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
@@ -531,7 +556,7 @@ function updateLegend() {
  
   const wmsKeys = Object.keys(wmsActive);
   const showCorine = corineVisible && corineLayer;
-  const showFirms = showFires && !firesError;
+  const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
   if (!wmsKeys.length && !showCorine && !showFirms) { el.style.display = 'none'; return; }
  
   el.style.display = 'block';
@@ -1043,7 +1068,19 @@ function buildTicks() {
   }
 }
 
+function syncTimelinePanelsVisibility() {
+  const timelinesBar = document.getElementById('timelines-bar');
+  const alertsTimelinePanel = document.getElementById('timeline');
+  const historicalTimelinePanel = document.getElementById('historical-timeline');
+  const historicalVisible = hasVisibleHistoricalLayers();
+
+  if (alertsTimelinePanel) alertsTimelinePanel.hidden = !showAlerts;
+  if (historicalTimelinePanel) historicalTimelinePanel.hidden = !historicalVisible;
+  if (timelinesBar) timelinesBar.hidden = !(showAlerts || historicalVisible);
+}
+
 function updateTimelineUI() {
+  syncTimelinePanelsVisibility();
   const isNow = (tlCurrent - tlMin) < 60000;
   const badge = document.getElementById('tl-badge');
   badge.textContent = isNow ? 'AHORA' : 'FUTURO';
@@ -1059,11 +1096,20 @@ function onSliderInput(val) {
   renderAll();
 }
 
+function stopTimelinePlayback() {
+  if (!playInterval) return;
+  clearInterval(playInterval);
+  playInterval = null;
+  const btn = document.getElementById('tl-play');
+  if (!btn) return;
+  btn.innerHTML = '&#9654; Play';
+  btn.classList.remove('playing');
+}
+
 function togglePlay() {
   const btn = document.getElementById('tl-play');
   if (playInterval) {
-    clearInterval(playInterval); playInterval = null;
-    btn.innerHTML = '&#9654; Play'; btn.classList.remove('playing');
+    stopTimelinePlayback();
   } else {
     btn.innerHTML = '&#9646;&#9646; Pausa'; btn.classList.add('playing');
     playInterval = setInterval(() => {
@@ -1076,7 +1122,7 @@ function togglePlay() {
 }
 
 function resetTimeline() {
-  if (playInterval) togglePlay();
+  stopTimelinePlayback();
   document.getElementById('tl-slider').value = 0;
   onSliderInput(0);
 }
@@ -1084,8 +1130,9 @@ function resetTimeline() {
 function isActive(a) { return new Date(a.onset) <= tlCurrent; }
 
 // Carga 
-async function fetchJson(url) {
-  const r = await fetch(url, { cache: 'no-store' });
+async function fetchJson(url, options = {}) {
+  const { cache = 'no-store', ...fetchOptions } = options;
+  const r = await fetch(url, { cache, ...fetchOptions });
   if (!r.ok) {
     let message = `HTTP ${r.status}`;
     try {
@@ -1228,6 +1275,10 @@ function refreshBurntAreaTimelineNote() {
   );
 }
 
+function syncTimelinePanelLayout() {
+  document.body.classList.toggle('dual-timeline', burntAreaVisible && historicalFiresVisible);
+}
+
 function updateBurntAreaTimelineUI() {
   const panel = document.getElementById('burnt-area-timeline');
   const slider = document.getElementById('ba-slider');
@@ -1238,6 +1289,7 @@ function updateBurntAreaTimelineUI() {
   if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn) return;
 
   panel.hidden = !burntAreaVisible;
+  syncTimelinePanelLayout();
   playBtn.classList.toggle('playing', Boolean(burntAreaPlayInterval));
   playBtn.innerHTML = burntAreaPlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
   refreshBurntAreaTimelineNote();
@@ -1470,6 +1522,997 @@ async function toggleBurntAreaLayer(enabled) {
     setBurntAreaFrame(burntAreaTimelineIndex);
   } catch (_) {
     updateBurntAreaTimelineUI();
+  }
+}
+
+function getFirmsHistoricalDateRange() {
+  return {
+    dateFrom: historicalFiresMetadata?.default_date_from || FIRMS_HISTORY_DEFAULT_DATE_FROM,
+    dateTo: historicalFiresMetadata?.default_date_to || FIRMS_HISTORY_DEFAULT_DATE_TO,
+  };
+}
+
+function buildFirmsHistoricalTimelineUrl() {
+  const { dateFrom, dateTo } = getFirmsHistoricalDateRange();
+  const params = new URLSearchParams({
+    date_from: dateFrom,
+    date_to: dateTo,
+  });
+  return `${FIRMS_HISTORY_TIMELINE_URL}?${params.toString()}`;
+}
+
+function buildFirmsHistoricalFeaturesUrl(dateString) {
+  const params = new URLSearchParams({
+    date: dateString,
+    limit: String(FIRMS_HISTORY_FETCH_LIMIT),
+  });
+  return `${FIRMS_HISTORY_FEATURES_URL}?${params.toString()}`;
+}
+
+function formatFirmsHistoricalDate(dateString) {
+  const dateValue = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(dateValue.getTime())) return dateString;
+  return dateValue.toLocaleDateString('es-ES', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatFirmsHistoricalCount(count) {
+  const value = Number(count) || 0;
+  const formatted = new Intl.NumberFormat('es-ES').format(value);
+  return `${formatted} ${value === 1 ? 'foco' : 'focos'}`;
+}
+
+function updateHistoricalFiresSummaryUI(item) {
+  const summaryEl = document.getElementById('fh-summary');
+  if (!summaryEl) return;
+  if (!item) {
+    summaryEl.dataset.state = 'nodata';
+    summaryEl.textContent = '--';
+    return;
+  }
+
+  const hotspotCount = Number(item.hotspot_count) || 0;
+  const frpMax = Number(item.frp_max_mw);
+  const frpLabel = Number.isFinite(frpMax) ? ` · FRP máx ${formatFireFrp(frpMax)} MW` : '';
+  summaryEl.dataset.state = hotspotCount > 0 ? 'active' : 'zero';
+  summaryEl.textContent = `${formatFirmsHistoricalCount(hotspotCount)}${frpLabel}`;
+}
+
+function getHistoricalFiresCurrentTimelineItem() {
+  return historicalFiresTimeline[historicalFiresTimelineIndex] || historicalFiresTimeline[0] || null;
+}
+
+function setHistoricalFiresTimelineNote(message, isError = false) {
+  const note = document.getElementById('fh-note');
+  if (!note) return;
+  note.textContent = message;
+  note.style.color = isError ? '#ff9786' : '#cbb6ad';
+}
+
+function refreshHistoricalFiresTimelineNote() {
+  if (historicalFiresError) {
+    setHistoricalFiresTimelineNote(`No se pudo cargar la capa histórica: ${historicalFiresError}`, true);
+    return;
+  }
+
+  if (!historicalFiresTimeline.length) {
+    setHistoricalFiresTimelineNote('No hay fechas históricas disponibles para la ventana temporal configurada.', true);
+    return;
+  }
+
+  const currentItem = getHistoricalFiresCurrentTimelineItem();
+  if (!currentItem) {
+    setHistoricalFiresTimelineNote('No se pudo resolver la fecha histórica seleccionada.', true);
+    return;
+  }
+
+  if (historicalFiresFrameLoading) {
+    setHistoricalFiresTimelineNote(`Cargando focos históricos del ${currentItem.date}...`);
+    return;
+  }
+
+  const coverageLabel = `Cobertura ${currentItem.coverage_unit_count}/${currentItem.coverage_expected_unit_count}`;
+  setHistoricalFiresTimelineNote(
+    `Serie lista: ${historicalFiresTimeline.length} días. ${coverageLabel}.`
+  );
+}
+
+function updateHistoricalFiresTimelineUI() {
+  const panel = document.getElementById('firms-history-timeline');
+  const slider = document.getElementById('fh-slider');
+  const dateEl = document.getElementById('fh-datetime');
+  const rangeStartEl = document.getElementById('fh-range-start');
+  const rangeEndEl = document.getElementById('fh-range-end');
+  const playBtn = document.getElementById('fh-play');
+  const resetBtn = document.getElementById('fh-reset');
+  if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn || !resetBtn) return;
+
+  panel.hidden = !historicalFiresVisible;
+  syncTimelinePanelLayout();
+  playBtn.classList.toggle('playing', Boolean(historicalFiresPlayInterval));
+  playBtn.innerHTML = historicalFiresPlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
+  refreshHistoricalFiresTimelineNote();
+
+  if (!historicalFiresTimeline.length) {
+    const { dateFrom, dateTo } = getFirmsHistoricalDateRange();
+    slider.min = 0;
+    slider.max = 0;
+    slider.value = 0;
+    slider.disabled = true;
+    playBtn.disabled = true;
+    resetBtn.disabled = true;
+    dateEl.textContent = '--';
+    updateHistoricalFiresSummaryUI(null);
+    rangeStartEl.textContent = dateFrom;
+    rangeEndEl.textContent = dateTo;
+    return;
+  }
+
+  const currentItem = getHistoricalFiresCurrentTimelineItem();
+  slider.min = 0;
+  slider.max = Math.max(0, historicalFiresTimeline.length - 1);
+  slider.value = String(historicalFiresTimelineIndex);
+  slider.disabled = historicalFiresFrameLoading;
+  playBtn.disabled = false;
+  resetBtn.disabled = false;
+  dateEl.textContent = formatFirmsHistoricalDate(currentItem.date);
+  updateHistoricalFiresSummaryUI(currentItem);
+  rangeStartEl.textContent = historicalFiresTimeline[0].date;
+  rangeEndEl.textContent = historicalFiresTimeline[historicalFiresTimeline.length - 1].date;
+}
+
+function stopHistoricalFiresPlayback() {
+  if (!historicalFiresPlayInterval) return;
+  clearInterval(historicalFiresPlayInterval);
+  historicalFiresPlayInterval = null;
+  updateHistoricalFiresTimelineUI();
+}
+
+function getHistoricalRenderableFires(fires = historicalFiresData) {
+  return Array.isArray(fires) ? fires : [];
+}
+
+function trimHistoricalFiresCache(maxEntries = 6) {
+  while (historicalFiresDataCache.size > maxEntries) {
+    const oldestKey = historicalFiresDataCache.keys().next().value;
+    historicalFiresDataCache.delete(oldestKey);
+  }
+}
+
+function normalizeHistoricalFireFeature(feature) {
+  const properties = feature?.properties || {};
+  const coordinates = Array.isArray(feature?.geometry?.coordinates) ? feature.geometry.coordinates : [];
+  const longitude = Number(properties.longitude ?? coordinates[0]);
+  const latitude = Number(properties.latitude ?? coordinates[1]);
+  return {
+    ...properties,
+    id: feature?.id || properties.id || `${properties.firms_source || 'firms'}_${latitude}_${longitude}`,
+    longitude,
+    latitude,
+  };
+}
+
+function compareHistoricalFires(a, b) {
+  const frpDiff = (Number(b.frp) || 0) - (Number(a.frp) || 0);
+  if (frpDiff !== 0) return frpDiff;
+  return String(b.acq_datetime_utc || '').localeCompare(String(a.acq_datetime_utc || ''));
+}
+
+function normalizeHistoricalFiresPayload(payload) {
+  return (Array.isArray(payload?.features) ? payload.features : [])
+    .map(normalizeHistoricalFireFeature)
+    .filter(f => Number.isFinite(Number(f.latitude)) && Number.isFinite(Number(f.longitude)))
+    .sort(compareHistoricalFires);
+}
+
+function buildFireTooltipHtml(fire, title = 'Foco FIRMS') {
+  const intensityLabel = getFireIntensityLabel(fire);
+  const intensityColor = getFireIntensityColor(fire);
+  const confidenceLabel = getFireConfidenceLabel(fire);
+  return `<b>${title}</b><br>`+
+    `FRP: ${formatFireFrp(fire.frp)} MW · <span style="color:${intensityColor}">${escapeHtml(intensityLabel)}</span><br>`+
+    `Confianza: ${escapeHtml(confidenceLabel)}<br>`+
+    `Fecha/hora: ${escapeHtml(getFireDateTimeLabel(fire))}<br>`+
+    `Satélite: ${escapeHtml(fire.satellite || fire.firms_source || 'no indicado')}<br>`+
+    `Día/noche: ${escapeHtml(getFireDayNightLabel(fire))}`;
+}
+
+function renderHistoricalFires() {
+  historicalFireLayers.forEach(layer => map.removeLayer(layer));
+  historicalFireLayers = [];
+  if (!historicalFiresVisible) return;
+  if (historicalFiresError) return;
+
+  historicalFiresData.forEach(fire => {
+    const lat = Number(fire.latitude);
+    const lon = Number(fire.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    const intensityColor = getFireIntensityColor(fire);
+    const radius = Math.max(4, getFireRadius(fire) - 1);
+    const circle = L.circleMarker([lat, lon], {
+      renderer: historicalFiresRenderer,
+      radius,
+      color: '#1f2430',
+      fillColor: intensityColor,
+      fillOpacity: 0.72,
+      weight: getFireBorderWeight(fire),
+      opacity: 0.88,
+    }).addTo(map);
+    circle.fireId = fire.id;
+    circle.bindTooltip(buildFireTooltipHtml(fire, 'Foco FIRMS histórico'), { sticky: true });
+    circle.on('click', () => {
+      focusFireLocation(lat, lon, fire.id);
+      L.popup({ offset: [0, -8] })
+        .setLatLng([lat, lon])
+        .setContent(buildFireTooltipHtml(fire, 'Foco FIRMS histórico'))
+        .openOn(map);
+    });
+    historicalFireLayers.push(circle);
+  });
+
+}
+
+async function loadHistoricalFiresForDate(dateString, forceReload = false) {
+  const requestToken = ++historicalFiresRequestToken;
+  historicalFiresFrameLoading = true;
+  updateHistoricalFiresTimelineUI();
+
+  try {
+    let fires = null;
+    if (!forceReload && historicalFiresDataCache.has(dateString)) {
+      fires = historicalFiresDataCache.get(dateString);
+    } else {
+      const payload = await fetchJson(buildFirmsHistoricalFeaturesUrl(dateString), HISTORICAL_DATA_FETCH_OPTIONS);
+      fires = normalizeHistoricalFiresPayload(payload);
+      historicalFiresDataCache.set(dateString, fires);
+      trimHistoricalFiresCache();
+    }
+
+    if (requestToken !== historicalFiresRequestToken) return;
+    historicalFiresData = fires;
+    historicalFiresError = null;
+    renderHistoricalFires();
+    updateLegend();
+  } catch (error) {
+    if (requestToken !== historicalFiresRequestToken) return;
+    historicalFiresData = [];
+    historicalFiresError = error.message;
+    renderHistoricalFires();
+    updateLegend();
+  } finally {
+    if (requestToken === historicalFiresRequestToken) {
+      historicalFiresFrameLoading = false;
+      updateHistoricalFiresTimelineUI();
+    }
+  }
+}
+
+async function setHistoricalFiresFrame(index, forceReload = false) {
+  if (!historicalFiresTimeline.length) return;
+  historicalFiresTimelineIndex = Math.max(0, Math.min(index, historicalFiresTimeline.length - 1));
+  updateHistoricalFiresTimelineUI();
+  const currentItem = getHistoricalFiresCurrentTimelineItem();
+  if (!currentItem) return;
+  await loadHistoricalFiresForDate(currentItem.date, forceReload);
+}
+
+function resetHistoricalFiresTimeline() {
+  stopHistoricalFiresPlayback();
+  void setHistoricalFiresFrame(0);
+}
+
+function toggleHistoricalFiresPlayback() {
+  if (!historicalFiresTimeline.length) return;
+  if (historicalFiresPlayInterval) {
+    stopHistoricalFiresPlayback();
+    return;
+  }
+  historicalFiresPlayInterval = setInterval(() => {
+    if (historicalFiresFrameLoading) return;
+    const nextIndex = historicalFiresTimelineIndex + 1;
+    if (nextIndex >= historicalFiresTimeline.length) {
+      stopHistoricalFiresPlayback();
+      return;
+    }
+    void setHistoricalFiresFrame(nextIndex);
+  }, 700);
+  updateHistoricalFiresTimelineUI();
+}
+
+async function ensureHistoricalFiresTimelineLoaded() {
+  if (historicalFiresMetadata && historicalFiresTimeline.length) {
+    return {
+      layer_id: historicalFiresMetadata.layer_id,
+      dataset_type: historicalFiresMetadata.dataset_type,
+      date_from: historicalFiresMetadata.default_date_from,
+      date_to: historicalFiresMetadata.default_date_to,
+      date_count: historicalFiresTimeline.length,
+      dates: historicalFiresTimeline,
+    };
+  }
+  if (historicalFiresLoadingPromise) return historicalFiresLoadingPromise;
+  historicalFiresLoadingPromise = (async () => {
+    const timelinePayload = await fetchJson(buildFirmsHistoricalTimelineUrl(), HISTORICAL_DATA_FETCH_OPTIONS);
+    historicalFiresMetadata = {
+      layer_id: timelinePayload.layer_id || 'firms_hotspot_historical',
+      dataset_type: timelinePayload.dataset_type || 'SP',
+      default_date_from: timelinePayload.date_from || FIRMS_HISTORY_DEFAULT_DATE_FROM,
+      default_date_to: timelinePayload.date_to || FIRMS_HISTORY_DEFAULT_DATE_TO,
+    };
+    historicalFiresTimeline = Array.isArray(timelinePayload.dates) ? timelinePayload.dates : [];
+    historicalFiresTimelineIndex = 0;
+    updateHistoricalFiresTimelineUI();
+    return timelinePayload;
+  })()
+    .catch(error => {
+      historicalFiresError = error.message;
+      historicalFiresTimeline = [];
+      historicalFiresData = [];
+      setHistoricalFiresTimelineNote(`No se pudo cargar la capa histórica: ${error.message}`, true);
+      updateHistoricalFiresTimelineUI();
+      throw error;
+    })
+    .finally(() => {
+      historicalFiresLoadingPromise = null;
+    });
+  return historicalFiresLoadingPromise;
+}
+
+async function toggleHistoricalFiresLayer(enabled) {
+  historicalFiresVisible = enabled;
+
+  if (!enabled) {
+    stopHistoricalFiresPlayback();
+    historicalFiresData = [];
+    historicalFiresError = null;
+    historicalFiresFrameLoading = false;
+    historicalFiresRequestToken += 1;
+    renderHistoricalFires();
+    renderList();
+    updateLegend();
+    updateHistoricalFiresTimelineUI();
+    return;
+  }
+
+  renderList();
+  updateLegend();
+  updateHistoricalFiresTimelineUI();
+
+  try {
+    await ensureHistoricalFiresTimelineLoaded();
+    historicalFiresError = null;
+    if (!historicalFiresTimeline.length) {
+      updateHistoricalFiresTimelineUI();
+      return;
+    }
+    await setHistoricalFiresFrame(historicalFiresTimelineIndex);
+  } catch (_) {
+    updateHistoricalFiresTimelineUI();
+  }
+}
+
+function buildDateItemMap(items) {
+  return new Map(
+    (Array.isArray(items) ? items : [])
+      .filter(item => item && item.date)
+      .map(item => [item.date, item])
+  );
+}
+
+function hasVisibleHistoricalLayers() {
+  return burntAreaVisible || historicalFiresVisible;
+}
+
+function getHistoricalTimelineCurrentDate() {
+  return historicalTimeline[historicalTimelineIndex] || historicalTimeline[0] || null;
+}
+
+function getHistoricalTimelineDefaultDate() {
+  if (historicalFiresVisible) {
+    return historicalFiresTimeline[0]?.date
+      || burntAreaTimeline.find(item => item.has_local_tiles)?.date
+      || burntAreaTimeline[0]?.date
+      || null;
+  }
+  return burntAreaTimeline.find(item => item.has_local_tiles)?.date
+    || burntAreaTimeline[0]?.date
+    || historicalFiresTimeline[0]?.date
+    || null;
+}
+
+function resolveHistoricalTimelineDefaultIndex() {
+  if (!historicalTimeline.length) return 0;
+  const defaultDate = getHistoricalTimelineDefaultDate();
+  const nextIndex = defaultDate ? historicalTimeline.indexOf(defaultDate) : -1;
+  return nextIndex >= 0 ? nextIndex : 0;
+}
+
+function rebuildHistoricalTimeline(preferredDate = null) {
+  const currentDate = preferredDate || getHistoricalTimelineCurrentDate();
+  historicalTimeline = Array.from(
+    new Set([
+      ...burntAreaTimeline.map(item => item?.date),
+      ...historicalFiresTimeline.map(item => item?.date),
+    ].filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  if (!historicalTimeline.length) {
+    historicalTimelineIndex = 0;
+    return;
+  }
+
+  const targetDate = currentDate || getHistoricalTimelineDefaultDate();
+  const nextIndex = targetDate ? historicalTimeline.indexOf(targetDate) : -1;
+  historicalTimelineIndex = nextIndex >= 0 ? nextIndex : resolveHistoricalTimelineDefaultIndex();
+}
+
+function getHistoricalTimelineBoundaryRange() {
+  const startCandidates = [
+    historicalTimeline[0],
+    burntAreaTimeline[0]?.date,
+    historicalFiresTimeline[0]?.date,
+    burntAreaMetadata?.default_date_from,
+    historicalFiresMetadata?.default_date_from,
+    BURNT_AREA_DEFAULT_DATE_FROM,
+    FIRMS_HISTORY_DEFAULT_DATE_FROM,
+  ].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const endCandidates = [
+    historicalTimeline[historicalTimeline.length - 1],
+    burntAreaTimeline[burntAreaTimeline.length - 1]?.date,
+    historicalFiresTimeline[historicalFiresTimeline.length - 1]?.date,
+    burntAreaMetadata?.default_date_to,
+    historicalFiresMetadata?.default_date_to,
+    BURNT_AREA_DEFAULT_DATE_TO,
+    FIRMS_HISTORY_DEFAULT_DATE_TO,
+  ].filter(Boolean).sort((a, b) => a.localeCompare(b));
+
+  return {
+    start: startCandidates[0] || '--',
+    end: endCandidates[endCandidates.length - 1] || '--',
+  };
+}
+
+function getBurntAreaCurrentTimelineItem() {
+  const currentDate = getHistoricalTimelineCurrentDate();
+  return currentDate ? (burntAreaTimelineByDate.get(currentDate) || null) : null;
+}
+
+function getHistoricalFiresCurrentTimelineItem() {
+  const currentDate = getHistoricalTimelineCurrentDate();
+  return currentDate ? (historicalFiresTimelineByDate.get(currentDate) || null) : null;
+}
+
+function setHistoricalTimelineNote(message, isError = false) {
+  const note = document.getElementById('ht-note');
+  if (!note) return;
+  if (!message) {
+    note.hidden = true;
+    note.textContent = '';
+    return;
+  }
+  note.hidden = false;
+  note.textContent = message;
+  note.style.color = isError ? '#ff9786' : '#cbb6ad';
+}
+
+function setHistoricalSummaryState(elementId, { hidden = false, state = 'nodata', text = '--' } = {}) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el.hidden = hidden;
+  if (hidden) return;
+  el.dataset.state = state;
+  el.textContent = text;
+}
+
+function updateHistoricalBurntAreaSummaryUI(item) {
+  if (!burntAreaVisible) {
+    setHistoricalSummaryState('ht-ba-summary', { hidden: true });
+    return;
+  }
+  if (burntAreaError) {
+    setHistoricalSummaryState('ht-ba-summary', { state: 'error', text: 'BA error' });
+    return;
+  }
+  if (!item) {
+    setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA s/d' });
+    return;
+  }
+  if (!item.has_local_tiles) {
+    setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA sin teselas' });
+    return;
+  }
+
+  const formattedSurface = formatBurntAreaSurface(item.burned_area_ha);
+  if (formattedSurface === null) {
+    setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA s/d' });
+    return;
+  }
+  if (Number(item.burned_area_ha) <= 0) {
+    setHistoricalSummaryState('ht-ba-summary', { state: 'zero', text: 'BA 0 ha' });
+    return;
+  }
+  setHistoricalSummaryState('ht-ba-summary', { state: 'active', text: `BA ${formattedSurface}` });
+}
+
+function updateHistoricalFiresSummaryUI(item) {
+  if (!historicalFiresVisible) {
+    setHistoricalSummaryState('ht-fh-summary', { hidden: true });
+    return;
+  }
+  if (historicalFiresError) {
+    setHistoricalSummaryState('ht-fh-summary', { state: 'error', text: 'FIRMS error' });
+    return;
+  }
+  if (historicalFiresFrameLoading) {
+    setHistoricalSummaryState('ht-fh-summary', { state: 'loading', text: 'FIRMS cargando' });
+    return;
+  }
+  if (!item) {
+    setHistoricalSummaryState('ht-fh-summary', { state: 'nodata', text: 'FIRMS s/d' });
+    return;
+  }
+
+  const hotspotCount = Number(item.hotspot_count) || 0;
+  if (hotspotCount <= 0) {
+    setHistoricalSummaryState('ht-fh-summary', { state: 'zero', text: 'FIRMS 0 focos' });
+    return;
+  }
+  setHistoricalSummaryState('ht-fh-summary', {
+    state: 'active',
+    text: `FIRMS ${formatFirmsHistoricalCount(hotspotCount)}`,
+  });
+}
+
+function refreshHistoricalTimelineNote() {
+  if (!hasVisibleHistoricalLayers()) {
+    setHistoricalTimelineNote('');
+    return;
+  }
+  if (!historicalTimeline.length) {
+    const errorMessages = [];
+    if (burntAreaVisible && burntAreaError) errorMessages.push(`BA: ${burntAreaError}`);
+    if (historicalFiresVisible && historicalFiresError) errorMessages.push(`FIRMS: ${historicalFiresError}`);
+    setHistoricalTimelineNote(
+      errorMessages.length
+        ? errorMessages.join(' · ')
+        : 'No hay fechas historicas disponibles para las capas seleccionadas.',
+      errorMessages.length > 0
+    );
+    return;
+  }
+
+  const currentDate = getHistoricalTimelineCurrentDate();
+  if (!currentDate) {
+    setHistoricalTimelineNote('No se pudo resolver la fecha historica seleccionada.', true);
+    return;
+  }
+
+  setHistoricalTimelineNote('');
+  return;
+
+  const messages = [];
+  let visibleLayerCount = 0;
+  let errorLayerCount = 0;
+
+  if (burntAreaVisible) {
+    visibleLayerCount += 1;
+    const item = getBurntAreaCurrentTimelineItem();
+    if (burntAreaError) {
+      messages.push(`BA: ${burntAreaError}`);
+      errorLayerCount += 1;
+    } else if (!item) {
+      messages.push(`BA: sin dato para ${currentDate}`);
+    } else if (!item.has_local_tiles) {
+      messages.push(`BA: sin teselas para ${currentDate}`);
+    } else {
+      messages.push(`BA: ${formatBurntAreaSurface(item.burned_area_ha) || 's/d'}`);
+    }
+  }
+
+  if (historicalFiresVisible) {
+    visibleLayerCount += 1;
+    const item = getHistoricalFiresCurrentTimelineItem();
+    if (historicalFiresError) {
+      messages.push(`FIRMS: ${historicalFiresError}`);
+      errorLayerCount += 1;
+    } else if (historicalFiresFrameLoading) {
+      messages.push(`FIRMS: cargando ${currentDate}...`);
+    } else if (!item) {
+      messages.push(`FIRMS: sin dato para ${currentDate}`);
+    } else {
+      const coverageActual = Number(item.coverage_unit_count);
+      const coverageExpected = Number(item.coverage_expected_unit_count);
+      const coverageLabel = Number.isFinite(coverageActual) && Number.isFinite(coverageExpected)
+        ? ` cobertura ${coverageActual}/${coverageExpected}`
+        : '';
+      messages.push(`FIRMS: ${formatFirmsHistoricalCount(item.hotspot_count)}${coverageLabel}`);
+    }
+  }
+
+  setHistoricalTimelineNote(messages.join(' · '), visibleLayerCount > 0 && errorLayerCount === visibleLayerCount);
+}
+
+function updateHistoricalTimelineUI() {
+  const panel = document.getElementById('historical-timeline');
+  const slider = document.getElementById('ht-slider');
+  const dateEl = document.getElementById('ht-datetime');
+  const rangeStartEl = document.getElementById('ht-range-start');
+  const rangeEndEl = document.getElementById('ht-range-end');
+  const playBtn = document.getElementById('ht-play');
+  const resetBtn = document.getElementById('ht-reset');
+  if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn || !resetBtn) return;
+
+  syncTimelinePanelsVisibility();
+  playBtn.classList.toggle('playing', Boolean(historicalTimelinePlayInterval));
+  playBtn.innerHTML = historicalTimelinePlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
+
+  updateHistoricalBurntAreaSummaryUI(getBurntAreaCurrentTimelineItem());
+  updateHistoricalFiresSummaryUI(getHistoricalFiresCurrentTimelineItem());
+  refreshHistoricalTimelineNote();
+
+  const boundaryRange = getHistoricalTimelineBoundaryRange();
+  if (!historicalTimeline.length) {
+    slider.min = 0;
+    slider.max = 0;
+    slider.value = 0;
+    slider.disabled = true;
+    playBtn.disabled = true;
+    resetBtn.disabled = true;
+    dateEl.textContent = '--';
+    rangeStartEl.textContent = boundaryRange.start;
+    rangeEndEl.textContent = boundaryRange.end;
+    return;
+  }
+
+  const currentDate = getHistoricalTimelineCurrentDate();
+  slider.min = 0;
+  slider.max = Math.max(0, historicalTimeline.length - 1);
+  slider.value = String(historicalTimelineIndex);
+  slider.disabled = historicalFiresVisible && historicalFiresFrameLoading;
+  playBtn.disabled = slider.disabled;
+  resetBtn.disabled = false;
+  dateEl.textContent = formatFirmsHistoricalDate(currentDate);
+  rangeStartEl.textContent = historicalTimeline[0];
+  rangeEndEl.textContent = historicalTimeline[historicalTimeline.length - 1];
+}
+
+function updateBurntAreaTimelineUI() {
+  updateHistoricalTimelineUI();
+}
+
+function updateHistoricalFiresTimelineUI() {
+  updateHistoricalTimelineUI();
+}
+
+function clearBurntAreaRasterLayer() {
+  if (burntAreaLayer && map.hasLayer(burntAreaLayer)) {
+    map.removeLayer(burntAreaLayer);
+  }
+}
+
+async function syncBurntAreaLocatorForDate(dateString, forceReload = false) {
+  if (!burntAreaVisible || !dateString || !shouldDisplayBurntAreaLocator()) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  const currentItem = burntAreaTimelineByDate.get(dateString);
+  if (!currentItem || !currentItem.has_local_tiles) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  const sourceZoom = resolveBurntAreaLocatorSourceZoom();
+  const cacheKey = `${currentItem.date}:${sourceZoom}`;
+  const layer = ensureBurntAreaLocatorLayer();
+  refreshBurntAreaLocatorStyle();
+
+  if (!forceReload && burntAreaLocatorKey === cacheKey && map.hasLayer(layer)) return;
+
+  if (burntAreaLocatorCache.has(cacheKey)) {
+    burntAreaLocatorKey = cacheKey;
+    layer.clearLayers();
+    layer.addData(burntAreaLocatorCache.get(cacheKey));
+    if (!map.hasLayer(layer)) layer.addTo(map);
+    return;
+  }
+
+  const requestKey = cacheKey;
+  const locatorPromise = fetchJson(buildBurntAreaLocatorUrl(currentItem.date, sourceZoom))
+    .then(data => {
+      burntAreaLocatorCache.set(requestKey, data);
+      if (!burntAreaVisible || getHistoricalTimelineCurrentDate() !== currentItem.date) return;
+      if (resolveBurntAreaLocatorSourceZoom() !== sourceZoom) return;
+      burntAreaLocatorKey = requestKey;
+      layer.clearLayers();
+      layer.addData(data);
+      if (!map.hasLayer(layer)) layer.addTo(map);
+      refreshBurntAreaLocatorStyle();
+    })
+    .catch(error => {
+      console.error('No se pudo cargar el localizador de burnt area:', error);
+      if (burntAreaLocatorKey === requestKey) clearBurntAreaLocatorLayer();
+    })
+    .finally(() => {
+      if (burntAreaLocatorCachePromise === locatorPromise) {
+        burntAreaLocatorCachePromise = null;
+      }
+    });
+  burntAreaLocatorCachePromise = locatorPromise;
+  return locatorPromise;
+}
+
+async function syncBurntAreaLocatorForCurrentView(forceReload = false) {
+  return syncBurntAreaLocatorForDate(getHistoricalTimelineCurrentDate(), forceReload);
+}
+
+function renderBurntAreaForDate(dateString, forceReload = false) {
+  if (!burntAreaVisible || !dateString) {
+    clearBurntAreaRasterLayer();
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  const currentItem = burntAreaTimelineByDate.get(dateString);
+  if (!currentItem || !currentItem.has_local_tiles) {
+    clearBurntAreaRasterLayer();
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  ensureBurntAreaLayer(currentItem.date);
+  void syncBurntAreaLocatorForDate(currentItem.date, forceReload);
+}
+
+function clearHistoricalFiresFrameState({ resetError = true, cancelPending = false } = {}) {
+  if (cancelPending) historicalFiresRequestToken += 1;
+  historicalFiresData = [];
+  if (resetError) historicalFiresError = null;
+  historicalFiresFrameLoading = false;
+  renderHistoricalFires();
+  renderList();
+  updateLegend();
+  updateHistoricalTimelineUI();
+}
+
+async function applyHistoricalFiresForDate(dateString, forceReload = false) {
+  if (!historicalFiresVisible || !dateString) {
+    clearHistoricalFiresFrameState({ cancelPending: true });
+    return;
+  }
+
+  const currentItem = historicalFiresTimelineByDate.get(dateString);
+  if (!currentItem) {
+    clearHistoricalFiresFrameState({ cancelPending: true });
+    return;
+  }
+
+  await loadHistoricalFiresForDate(currentItem.date, forceReload);
+}
+
+function stopHistoricalTimelinePlayback() {
+  if (!historicalTimelinePlayInterval) return;
+  clearInterval(historicalTimelinePlayInterval);
+  historicalTimelinePlayInterval = null;
+  updateHistoricalTimelineUI();
+}
+
+function stopBurntAreaPlayback() {
+  stopHistoricalTimelinePlayback();
+}
+
+function stopHistoricalFiresPlayback() {
+  stopHistoricalTimelinePlayback();
+}
+
+async function setHistoricalTimelineFrame(index, forceReload = false) {
+  if (!historicalTimeline.length) {
+    updateHistoricalTimelineUI();
+    return;
+  }
+
+  historicalTimelineIndex = Math.max(0, Math.min(index, historicalTimeline.length - 1));
+  const currentDate = getHistoricalTimelineCurrentDate();
+  renderBurntAreaForDate(currentDate, forceReload);
+  updateHistoricalTimelineUI();
+  if (historicalFiresVisible) {
+    await applyHistoricalFiresForDate(currentDate, forceReload);
+  }
+  updateHistoricalTimelineUI();
+}
+
+function setBurntAreaFrame(index) {
+  void setHistoricalTimelineFrame(index, true);
+}
+
+function setHistoricalFiresFrame(index, forceReload = false) {
+  return setHistoricalTimelineFrame(index, forceReload);
+}
+
+function resetHistoricalTimeline() {
+  stopHistoricalTimelinePlayback();
+  void setHistoricalTimelineFrame(0);
+}
+
+function resetBurntAreaTimeline() {
+  resetHistoricalTimeline();
+}
+
+function resetHistoricalFiresTimeline() {
+  resetHistoricalTimeline();
+}
+
+function toggleHistoricalTimelinePlayback() {
+  if (!historicalTimeline.length) return;
+  if (historicalTimelinePlayInterval) {
+    stopHistoricalTimelinePlayback();
+    return;
+  }
+
+  historicalTimelinePlayInterval = setInterval(() => {
+    if (historicalFiresVisible && historicalFiresFrameLoading) return;
+    const nextIndex = historicalTimelineIndex + 1;
+    if (nextIndex >= historicalTimeline.length) {
+      stopHistoricalTimelinePlayback();
+      return;
+    }
+    void setHistoricalTimelineFrame(nextIndex);
+  }, 700);
+  updateHistoricalTimelineUI();
+}
+
+function toggleBurntAreaPlayback() {
+  toggleHistoricalTimelinePlayback();
+}
+
+function toggleHistoricalFiresPlayback() {
+  toggleHistoricalTimelinePlayback();
+}
+
+async function ensureBurntAreaTimelineLoaded() {
+  if (burntAreaMetadata && burntAreaTimeline.length) {
+    return {
+      layer_id: burntAreaMetadata.layer_id,
+      dataset_version: BURNT_AREA_DEFAULT_VERSION,
+      delivery_format: BURNT_AREA_DEFAULT_FORMAT,
+      date_from: BURNT_AREA_DEFAULT_DATE_FROM,
+      date_to: BURNT_AREA_DEFAULT_DATE_TO,
+      date_count: burntAreaTimeline.length,
+      dates: burntAreaTimeline,
+    };
+  }
+  if (burntAreaLoadingPromise) return burntAreaLoadingPromise;
+  burntAreaLoadingPromise = (async () => {
+    burntAreaMetadata = await fetchJson(BURNT_AREA_LAYER_METADATA_URL);
+    const timelinePayload = await fetchJson(buildBurntAreaTimelineUrl());
+    burntAreaTimeline = Array.isArray(timelinePayload.dates) ? timelinePayload.dates : [];
+    burntAreaTimelineByDate = buildDateItemMap(burntAreaTimeline);
+    rebuildHistoricalTimeline();
+    updateHistoricalTimelineUI();
+    return timelinePayload;
+  })()
+    .catch(error => {
+      burntAreaError = error.message;
+      burntAreaTimeline = [];
+      burntAreaTimelineByDate = new Map();
+      rebuildHistoricalTimeline();
+      updateHistoricalTimelineUI();
+      throw error;
+    })
+    .finally(() => {
+      burntAreaLoadingPromise = null;
+    });
+  return burntAreaLoadingPromise;
+}
+
+async function ensureHistoricalFiresTimelineLoaded() {
+  if (historicalFiresMetadata && historicalFiresTimeline.length) {
+    return {
+      layer_id: historicalFiresMetadata.layer_id,
+      dataset_type: historicalFiresMetadata.dataset_type,
+      date_from: historicalFiresMetadata.default_date_from,
+      date_to: historicalFiresMetadata.default_date_to,
+      date_count: historicalFiresTimeline.length,
+      dates: historicalFiresTimeline,
+    };
+  }
+  if (historicalFiresLoadingPromise) return historicalFiresLoadingPromise;
+  historicalFiresLoadingPromise = (async () => {
+    const timelinePayload = await fetchJson(buildFirmsHistoricalTimelineUrl(), HISTORICAL_DATA_FETCH_OPTIONS);
+    historicalFiresMetadata = {
+      layer_id: timelinePayload.layer_id || 'firms_hotspot_historical',
+      dataset_type: timelinePayload.dataset_type || 'SP',
+      default_date_from: timelinePayload.date_from || FIRMS_HISTORY_DEFAULT_DATE_FROM,
+      default_date_to: timelinePayload.date_to || FIRMS_HISTORY_DEFAULT_DATE_TO,
+    };
+    historicalFiresTimeline = Array.isArray(timelinePayload.dates) ? timelinePayload.dates : [];
+    historicalFiresTimelineByDate = buildDateItemMap(historicalFiresTimeline);
+    rebuildHistoricalTimeline();
+    updateHistoricalTimelineUI();
+    return timelinePayload;
+  })()
+    .catch(error => {
+      historicalFiresError = error.message;
+      historicalFiresTimeline = [];
+      historicalFiresTimelineByDate = new Map();
+      historicalFiresData = [];
+      rebuildHistoricalTimeline();
+      updateHistoricalTimelineUI();
+      throw error;
+    })
+    .finally(() => {
+      historicalFiresLoadingPromise = null;
+    });
+  return historicalFiresLoadingPromise;
+}
+
+async function toggleBurntAreaLayer(enabled) {
+  const hadVisibleHistoricalLayers = hasVisibleHistoricalLayers();
+  burntAreaVisible = enabled;
+
+  if (!enabled) {
+    clearBurntAreaRasterLayer();
+    clearBurntAreaLocatorLayer();
+    if (!historicalFiresVisible) stopHistoricalTimelinePlayback();
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    updateHistoricalTimelineUI();
+    return;
+  }
+
+  updateHistoricalTimelineUI();
+
+  try {
+    await ensureBurntAreaTimelineLoaded();
+    burntAreaError = null;
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    if (!historicalTimeline.length) {
+      updateHistoricalTimelineUI();
+      return;
+    }
+    if (!hadVisibleHistoricalLayers) {
+      historicalTimelineIndex = resolveHistoricalTimelineDefaultIndex();
+    }
+    await setHistoricalTimelineFrame(historicalTimelineIndex, true);
+  } catch (_) {
+    updateHistoricalTimelineUI();
+  }
+}
+
+async function toggleHistoricalFiresLayer(enabled) {
+  const hadVisibleHistoricalLayers = hasVisibleHistoricalLayers();
+  historicalFiresVisible = enabled;
+
+  if (!enabled) {
+    clearHistoricalFiresFrameState({ cancelPending: true });
+    if (!burntAreaVisible) stopHistoricalTimelinePlayback();
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    updateHistoricalTimelineUI();
+    return;
+  }
+
+  renderList();
+  updateLegend();
+  updateHistoricalTimelineUI();
+
+  try {
+    await ensureHistoricalFiresTimelineLoaded();
+    historicalFiresError = null;
+    rebuildHistoricalTimeline(getHistoricalTimelineCurrentDate());
+    if (!historicalTimeline.length) {
+      updateHistoricalTimelineUI();
+      return;
+    }
+    if (!hadVisibleHistoricalLayers) {
+      historicalTimelineIndex = resolveHistoricalTimelineDefaultIndex();
+    }
+    await setHistoricalTimelineFrame(historicalTimelineIndex);
+  } catch (_) {
+    updateHistoricalTimelineUI();
   }
 }
 
@@ -1902,7 +2945,9 @@ function renderList() {
   if (listMode === 'none') {
     title.textContent = 'Resultados';
     updateListHeader([]);
-    el.innerHTML = '<div class="empty">Activa Avisos AEMET o Focos NASA FIRMS para ver resultados</div>';
+    el.innerHTML = historicalFiresVisible || burntAreaVisible
+      ? '<div class="empty">Las capas históricas activas se muestran directamente en el mapa.</div>'
+      : '<div class="empty">Activa Avisos AEMET o Focos NASA FIRMS para ver resultados</div>';
     return;
   }
 
@@ -1941,7 +2986,7 @@ function renderList() {
       </div>`;
     }).join('');
 
-  } else {
+  } else if (listMode === 'fires') {
     title.textContent = 'Focos de incendio';
     const visibleFires = getRenderableFires(firesData);
     updateListHeader(visibleFires);
@@ -2023,7 +3068,9 @@ function zoomToFire(lat, lon, id) {
 // Toggles capas
 function toggleLayer(type, enabled) {
   if (type === 'alerts') {
-    showAlerts = enabled; renderAlerts();
+    showAlerts = enabled;
+    if (!enabled) stopTimelinePlayback();
+    renderAlerts();
     if (enabled) activeList = 'alerts';
     else if (showFires) activeList = 'fires';
   }
@@ -2034,6 +3081,7 @@ function toggleLayer(type, enabled) {
   }
   renderList();
   updateLegend();
+  syncTimelinePanelsVisibility();
 }
 
 // Filtros de nivel
@@ -2112,23 +3160,30 @@ if (chkBurntArea) {
   });
 }
 
-const burntAreaSlider = document.getElementById('ba-slider');
-if (burntAreaSlider) {
-  burntAreaSlider.addEventListener('input', e => {
-    const nextIndex = Number(e.target.value);
-    stopBurntAreaPlayback();
-    setBurntAreaFrame(nextIndex);
+const chkFirmsHistory = document.getElementById('chk-firms_history');
+if (chkFirmsHistory) {
+  chkFirmsHistory.addEventListener('change', e => {
+    void toggleHistoricalFiresLayer(e.target.checked);
   });
 }
 
-const burntAreaPlayBtn = document.getElementById('ba-play');
-if (burntAreaPlayBtn) {
-  burntAreaPlayBtn.addEventListener('click', () => toggleBurntAreaPlayback());
+const historicalTimelineSlider = document.getElementById('ht-slider');
+if (historicalTimelineSlider) {
+  historicalTimelineSlider.addEventListener('input', e => {
+    const nextIndex = Number(e.target.value);
+    stopHistoricalTimelinePlayback();
+    void setHistoricalTimelineFrame(nextIndex);
+  });
 }
 
-const burntAreaResetBtn = document.getElementById('ba-reset');
-if (burntAreaResetBtn) {
-  burntAreaResetBtn.addEventListener('click', () => resetBurntAreaTimeline());
+const historicalTimelinePlayBtn = document.getElementById('ht-play');
+if (historicalTimelinePlayBtn) {
+  historicalTimelinePlayBtn.addEventListener('click', () => toggleHistoricalTimelinePlayback());
+}
+
+const historicalTimelineResetBtn = document.getElementById('ht-reset');
+if (historicalTimelineResetBtn) {
+  historicalTimelineResetBtn.addEventListener('click', () => resetHistoricalTimeline());
 }
  
 const chkAlerts = document.getElementById('chk-alerts');

@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     aemet_api_key: str = ""
     firms_map_key: str = ""
     firms_include_modis: bool = False
+    firms_historical_default_date_from: str = "2025-05-01"
+    firms_historical_default_date_to: str = "2025-08-31"
     effis_auto_refresh: bool = True
     effis_refresh_timeout: float = 30.0
     effis_refresh_retries: int = 3
@@ -96,6 +98,15 @@ BURNT_AREA_PREFERRED_VERSION = "v4"
 BURNT_AREA_PREFERRED_FORMAT = "cog"
 BURNT_AREA_DEFAULT_DATE_FROM = settings.burnt_area_default_date_from
 BURNT_AREA_DEFAULT_DATE_TO = settings.burnt_area_default_date_to
+FIRMS_HISTORICAL_LAYER_ID = "firms_hotspot_historical"
+FIRMS_HISTORICAL_LAYER_NAME = "Focos históricos NASA FIRMS"
+FIRMS_HISTORICAL_DATASET_TYPE = "SP"
+FIRMS_HISTORICAL_SOURCES = ("VIIRS_NOAA20_SP", "VIIRS_SNPP_SP")
+FIRMS_HISTORICAL_BBOX_REGIONS = ("peninsula_baleares", "canarias", "ceuta_melilla")
+FIRMS_HISTORICAL_DEFAULT_DATE_FROM = settings.firms_historical_default_date_from
+FIRMS_HISTORICAL_DEFAULT_DATE_TO = settings.firms_historical_default_date_to
+FIRMS_HISTORICAL_FEATURE_LIMIT_DEFAULT = 5000
+FIRMS_HISTORICAL_FEATURE_LIMIT_MAX = 20000
 BURNT_AREA_TILE_MIN_ZOOM = 4
 BURNT_AREA_TILE_MAX_ZOOM = 10
 BURNT_AREA_CATALOG_ENTRY_PATHS = {
@@ -637,6 +648,283 @@ def build_burnt_area_daily_stats_payload(
             }
             for item in timeline["dates"]
         ],
+    }
+
+
+def query_firms_historical_stats_rows(
+    date_from: str | None,
+    date_to: str | None,
+) -> list[dict]:
+    if not postgres_relation_exists("pub.firms_hotspot_daily_stat"):
+        return []
+    base_where_clauses = [
+        "dataset_type = %s",
+        "stat_scope = 'country'",
+        "area_code = 'ES'",
+    ]
+    base_params: list[object] = [FIRMS_HISTORICAL_DATASET_TYPE]
+    if date_from:
+        base_where_clauses.append("nominal_date >= %s")
+        base_params.append(date_from)
+    if date_to:
+        base_where_clauses.append("nominal_date <= %s")
+        base_params.append(date_to)
+
+    sql = f"""
+    SELECT
+        nominal_date::text,
+        coverage_expected_unit_count,
+        coverage_unit_count,
+        coverage_complete,
+        hotspot_count,
+        high_confidence_count,
+        nominal_confidence_count,
+        low_confidence_count,
+        day_count,
+        night_count,
+        frp_sum_mw,
+        frp_max_mw,
+        source_count,
+        source_list,
+        bbox_region_list,
+        stats_generated_at
+    FROM pub.firms_hotspot_daily_stat
+    WHERE {' AND '.join(base_where_clauses)}
+    ORDER BY nominal_date
+    """
+    params = tuple(base_params)
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [
+        {
+            "nominal_date": row[0],
+            "coverage_expected_unit_count": int(row[1]),
+            "coverage_unit_count": int(row[2]),
+            "coverage_complete": bool(row[3]),
+            "hotspot_count": int(row[4]),
+            "high_confidence_count": int(row[5]),
+            "nominal_confidence_count": int(row[6]),
+            "low_confidence_count": int(row[7]),
+            "day_count": int(row[8]),
+            "night_count": int(row[9]),
+            "frp_sum_mw": float(row[10]) if row[10] is not None else 0.0,
+            "frp_max_mw": float(row[11]) if row[11] is not None else None,
+            "source_count": int(row[12]),
+            "source_list": list(row[13] or []),
+            "bbox_region_list": list(row[14] or []),
+            "stats_generated_at": row[15].isoformat() if row[15] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def build_firms_historical_layer_metadata() -> dict:
+    stats_rows = query_firms_historical_stats_rows(None, None)
+    available_dates = [row["nominal_date"] for row in stats_rows]
+    coverage_complete_date_count = sum(1 for row in stats_rows if row["coverage_complete"])
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "name": FIRMS_HISTORICAL_LAYER_NAME,
+        "description": (
+            "Histórico vectorial diario de focos NASA FIRMS persistido en PostGIS, "
+            "con serie temporal país y consulta GeoJSON por fecha."
+        ),
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "supported_sources": list(FIRMS_HISTORICAL_SOURCES),
+        "bbox_regions": list(FIRMS_HISTORICAL_BBOX_REGIONS),
+        "available": bool(stats_rows),
+        "default_date_from": FIRMS_HISTORICAL_DEFAULT_DATE_FROM,
+        "default_date_to": FIRMS_HISTORICAL_DEFAULT_DATE_TO,
+        "min_date": available_dates[0] if available_dates else None,
+        "max_date": available_dates[-1] if available_dates else None,
+        "date_count": len(available_dates),
+        "coverage_complete_date_count": coverage_complete_date_count,
+        "timeline_url": "/api/firms/history/timeline",
+        "stats_url": "/api/firms/history/stats/daily",
+        "features_url_template": "/api/firms/history/features?date={date}",
+        "publication_mode": "postgres_geojson",
+    }
+
+
+def build_firms_historical_timeline_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    stats_rows = query_firms_historical_stats_rows(date_from, date_to)
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "date_from": date_from,
+        "date_to": date_to,
+        "date_count": len(stats_rows),
+        "dates": [
+            {
+                "date": row["nominal_date"],
+                "coverage_expected_unit_count": row["coverage_expected_unit_count"],
+                "coverage_unit_count": row["coverage_unit_count"],
+                "coverage_complete": row["coverage_complete"],
+                "hotspot_count": row["hotspot_count"],
+                "high_confidence_count": row["high_confidence_count"],
+                "nominal_confidence_count": row["nominal_confidence_count"],
+                "low_confidence_count": row["low_confidence_count"],
+                "frp_max_mw": row["frp_max_mw"],
+                "stats_generated_at": row["stats_generated_at"],
+            }
+            for row in stats_rows
+        ],
+    }
+
+
+def build_firms_historical_daily_stats_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "date_from": date_from,
+        "date_to": date_to,
+        "stats_scope": "country",
+        "items": query_firms_historical_stats_rows(date_from, date_to),
+    }
+
+
+def query_firms_historical_feature_rows(
+    nominal_date: str,
+    firms_source: str | None,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> list[dict]:
+    if not postgres_relation_exists("core.firms_hotspot"):
+        return []
+    where_clauses = [
+        "fh.dataset_type = %s",
+        "fh.acq_date = %s::date",
+        "fh.confidence = ANY(%s)",
+    ]
+    params: list[object] = [
+        FIRMS_HISTORICAL_DATASET_TYPE,
+        nominal_date,
+        sorted(FIRMS_ALLOWED_CONFIDENCE),
+    ]
+    if firms_source:
+        where_clauses.append("fh.firms_source = %s")
+        params.append(firms_source)
+    if bbox_values is not None:
+        minx, miny, maxx, maxy = bbox_values
+        where_clauses.append("fh.geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)")
+        where_clauses.append("ST_Intersects(fh.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
+        params.extend([minx, miny, maxx, maxy, minx, miny, maxx, maxy])
+    params.append(limit)
+    sql = f"""
+    SELECT
+        fh.firms_source,
+        fh.latitude,
+        fh.longitude,
+        fh.acq_date::text,
+        fh.acq_time,
+        fh.satellite,
+        fh.confidence,
+        fh.frp,
+        fh.daynight,
+        fh.observed_at,
+        fh.bbox_regions
+    FROM core.firms_hotspot fh
+    WHERE {' AND '.join(where_clauses)}
+    ORDER BY fh.observed_at DESC, fh.frp DESC NULLS LAST, fh.firms_source
+    LIMIT %s
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    result = [
+        {
+            "firms_source": row[0],
+            "latitude": float(row[1]),
+            "longitude": float(row[2]),
+            "acq_date": row[3],
+            "acq_time": row[4],
+            "satellite": row[5],
+            "confidence": row[6],
+            "frp": float(row[7]) if row[7] is not None else None,
+            "daynight": row[8],
+            "observed_at": row[9].isoformat() if row[9] is not None else None,
+            "bbox_regions": list(row[10] or []),
+        }
+        for row in rows
+    ]
+    return result
+
+
+def build_firms_historical_feature_collection(
+    nominal_date: str,
+    firms_source: str | None,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> dict:
+    rows = query_firms_historical_feature_rows(nominal_date, firms_source, bbox_values, limit)
+    features = []
+    confidence_counts = {"h": 0, "n": 0, "l": 0}
+    for row in rows:
+        confidence_code = normalize_firms_confidence(row.get("confidence"))
+        if confidence_code in confidence_counts:
+            confidence_counts[confidence_code] += 1
+        frp = float(row.get("frp") or 0.0)
+        level, color = classify_frp(frp)
+        lat = row["latitude"]
+        lon = row["longitude"]
+        acq_date = row["acq_date"]
+        acq_time = row["acq_time"]
+        satellite = row["satellite"]
+        feature_id = f"{row['firms_source']}_{lat:.6f}_{lon:.6f}_{acq_date}_{acq_time}_{satellite}"
+        features.append(
+            {
+                "type": "Feature",
+                "id": feature_id,
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [lon, lat],
+                },
+                "properties": {
+                    "id": feature_id,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "acq_date": acq_date,
+                    "acq_time": acq_time,
+                    "satellite": satellite,
+                    "confidence": row["confidence"],
+                    "confidence_code": confidence_code,
+                    "confidence_label": firms_confidence_label(confidence_code),
+                    "frp": row["frp"],
+                    "daynight": row["daynight"],
+                    "level": level,
+                    "level_color": color,
+                    "intensity_label": level,
+                    "intensity_color": color,
+                    "acq_datetime_utc": row["observed_at"] or _format_acq_datetime_utc(acq_date, acq_time),
+                    "source": "firms_historical",
+                    "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+                    "firms_source": row["firms_source"],
+                    "bbox_regions": row["bbox_regions"],
+                },
+            }
+        )
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+            "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+            "nominal_date": nominal_date,
+            "firms_source": firms_source,
+            "bbox_filter": list(bbox_values) if bbox_values is not None else None,
+            "limit": limit,
+            "feature_count": len(features),
+            "confidence_counts": confidence_counts,
+        },
+        "features": features,
     }
 
 
@@ -2044,7 +2332,7 @@ async def fetch_spain_hotspots() -> list[dict]:
         unique.setdefault(key, fire)
 
     fires = sorted(
-        unique.values(),
+        list(unique.values()),
         key=lambda f: (f.get("acq_datetime_utc") or "", float(f.get("frp") or 0)),
         reverse=True,
     )
@@ -2283,6 +2571,73 @@ def get_burnt_area_locator(
         normalized_zoom,
     )
     return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/layers/firms-history")
+def get_firms_historical_layer_metadata():
+    """Metadatos de la capa temporal histórica de focos NASA FIRMS."""
+    data = build_firms_historical_layer_metadata()
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/timeline")
+def get_firms_historical_timeline(
+    date_from: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_TO),
+):
+    """Timeline diaria publicada para el histórico FIRMS."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_firms_historical_timeline_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/stats/daily")
+def get_firms_historical_daily_stats(
+    date_from: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_TO),
+):
+    """Serie diaria de estadísticas país del histórico FIRMS."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_firms_historical_daily_stats_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/features")
+def get_firms_historical_features(
+    nominal_date: str = Query(..., alias="date"),
+    firms_source: str | None = Query(None, alias="source"),
+    bbox: str | None = Query(None, description="BBox EPSG:4326 con formato minx,miny,maxx,maxy"),
+    limit: int = Query(
+        FIRMS_HISTORICAL_FEATURE_LIMIT_DEFAULT,
+        ge=1,
+        le=FIRMS_HISTORICAL_FEATURE_LIMIT_MAX,
+    ),
+):
+    """GeoJSON histórico de focos FIRMS para una fecha concreta."""
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    if firms_source is not None and firms_source not in FIRMS_HISTORICAL_SOURCES:
+        raise HTTPException(status_code=400, detail="source no soportado")
+    bbox_values: tuple[float, float, float, float] | None = None
+    if bbox:
+        try:
+            coords = [float(value) for value in bbox.split(",")]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="bbox debe contener cuatro numeros") from exc
+        if len(coords) != 4:
+            raise HTTPException(status_code=400, detail="bbox debe tener formato minx,miny,maxx,maxy")
+        minx, miny, maxx, maxy = coords
+        if minx >= maxx or miny >= maxy:
+            raise HTTPException(status_code=400, detail="bbox invalido: min debe ser menor que max")
+        bbox_values = (minx, miny, maxx, maxy)
+    data = build_firms_historical_feature_collection(
+        normalized_date,
+        firms_source,
+        bbox_values,
+        limit,
+    )
+    return JSONResponse(
+        content=data,
+        headers={"Cache-Control": "public, max-age=86400"},
+        media_type="application/geo+json",
+    )
  
 @app.get("/api/landcover")
 def get_landcover():

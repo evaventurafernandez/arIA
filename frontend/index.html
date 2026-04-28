@@ -37,46 +37,50 @@
 
       <!-- Leyenda WMS flotante -->
       <div id="wms-legend" style="display:none"></div>
-
-      <!-- Timeline propia de areas quemadas -->
-      <div id="burnt-area-timeline" hidden>
-        <div id="burnt-area-timeline-top">
-          <div id="burnt-area-timeline-label">
-            <span id="ba-badge">BA DIARIO</span>
-            <div id="ba-meta">
-              <span id="ba-datetime">--</span>
-              <span id="ba-area" data-state="nodata">--</span>
-            </div>
-          </div>
-          <div id="burnt-area-timeline-controls">
-            <button id="ba-play" type="button">&#9654; Play</button>
-            <button id="ba-reset" type="button">&#8635; Inicio</button>
-          </div>
-        </div>
-        <input type="range" id="ba-slider" min="0" max="0" value="0" />
-        <div id="ba-ticks">
-          <span id="ba-range-start">--</span>
-          <span id="ba-range-end">--</span>
-        </div>
-        <div id="ba-note">Preparando catalogo diario...</div>
-      </div>
     </div>
 
     <!-- Barra temporal -->
-    <div id="timeline">
-      <div id="timeline-top">
-        <div id="timeline-label">
-          <span id="tl-badge">AHORA</span>
-          <span id="tl-datetime"></span>
+    <div id="timelines-bar">
+      <div id="historical-timeline" class="timeline-panel" hidden>
+        <div id="historical-timeline-top">
+          <div id="historical-timeline-label">
+            <span id="ht-badge">HISTÓRICO</span>
+            <div id="ht-meta">
+              <span id="ht-datetime">--</span>
+              <div id="ht-statuses">
+                <span id="ht-ba-summary" class="historical-summary" data-state="nodata" hidden>--</span>
+                <span id="ht-fh-summary" class="historical-summary" data-state="nodata" hidden>--</span>
+              </div>
+            </div>
+          </div>
+          <div id="historical-timeline-controls">
+            <button id="ht-play" type="button">&#9654; Play</button>
+            <button id="ht-reset" type="button">&#8635; Inicio</button>
+          </div>
         </div>
-        <div id="timeline-controls">
-          <button id="tl-play" onclick="togglePlay()">&#9654; Play</button>
-          <button id="tl-reset" onclick="resetTimeline()">&#8635; Ahora</button>
+        <input type="range" id="ht-slider" min="0" max="0" value="0" />
+        <div id="ht-ticks">
+          <span id="ht-range-start">--</span>
+          <span id="ht-range-end">--</span>
         </div>
+        <div id="ht-note">Preparando series históricas...</div>
       </div>
-      <input type="range" id="tl-slider" min="0" max="100" value="0"
-             oninput="onSliderInput(this.value)"/>
-      <div id="tl-ticks"></div>
+
+      <div id="timeline" class="timeline-panel">
+        <div id="timeline-top">
+          <div id="timeline-label">
+            <span id="tl-badge">AHORA</span>
+            <span id="tl-datetime"></span>
+          </div>
+          <div id="timeline-controls">
+            <button id="tl-play" onclick="togglePlay()">&#9654; Play</button>
+            <button id="tl-reset" onclick="resetTimeline()">&#8635; Ahora</button>
+          </div>
+        </div>
+        <input type="range" id="tl-slider" min="0" max="100" value="0"
+               oninput="onSliderInput(this.value)"/>
+        <div id="tl-ticks"></div>
+      </div>
     </div>
   </div>
 
@@ -95,6 +99,11 @@
         Focos NASA FIRMS
         <input type="checkbox" id="chk-fires" checked />
       </label>
+      <label class="layer-row">
+        <span class="dot" style="background:#ff9d79"></span>
+        Histórico NASA FIRMS
+        <input type="checkbox" id="chk-firms_history" />
+      </label>
     </div>
 
     <!-- Capas de contexto WMS -->
@@ -112,7 +121,7 @@
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#ff6b3d"></span>
-        Areas quemadas diarias Copernicus
+        Áreas quemadas diarias Copernicus
         <input type="checkbox" id="chk-burnt_area_daily"/>
       </label>
       <label class="layer-row">

@@ -11,6 +11,51 @@ Además, el repositorio incorpora ya el pipeline base de `burnt area` diario par
 
 La ingesta puede trabajar con `all.zip` o con la carpeta extraída `data/copernicus/data_burnt_areas`, consolidar una fila por día/version/formato y completar después el tramo raster con recorte a España, teselas PNG locales y estadística diaria país.
 
+También incorpora un pipeline histórico diario para focos NASA FIRMS en España, con separación `raw -> source -> core -> pub`:
+
+- `source.firms_hotspot_download_file`
+- `source.firms_hotspot_observation`
+- `core.firms_hotspot`
+- `pub.firms_hotspot_daily_catalog`
+- `pub.firms_hotspot_daily_stat`
+
+El flujo descarga bloques CSV `SP` de `VIIRS_NOAA20_SP` y `VIIRS_SNPP_SP`, conserva los ficheros brutos y sus manifiestos en `data-store/files/raw/nasa/firms/historical`, deduplica en `core` y publica una serie diaria país que mantiene días con `0` focos si la cobertura del día es completa.
+
+## Pipeline histórico FIRMS
+
+1. Asegura las nuevas estructuras:
+
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/009_firms_history_source.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/010_firms_history_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/011_firms_history_pub.sql
+   ```
+
+2. Descarga el histórico bruto:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/download_firms_historical_sources.py --date-from 2025-05-01 --date-to 2025-08-31 --block-days 5
+   ```
+
+3. Importa `source`:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/import_firms_historical_source.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
+4. Reconstruye `core`:
+
+   ```bash
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_firms_historical_core.sql
+   ```
+
+5. Publica la serie diaria país:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/publish_firms_historical.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
 ## Resultado final de la carga
 
 Una ejecución completa deja actualizados estos niveles:
