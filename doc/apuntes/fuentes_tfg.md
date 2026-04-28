@@ -316,10 +316,10 @@ FRP. Por tanto, la representación cartográfica adoptada en el prototipo es:
 
 | FRP | Categoría visual | Color |
 |---|---|---|
-| `0 - 5 MW` | Débil | `#FFD166` |
-| `5 - 20 MW` | Moderada | `#F8961E` |
-| `20 - 75 MW` | Alta | `#E94F37` |
-| `> 75 MW` | Muy alta | `#8E1B1B` |
+| `< 10 MW` | Bajo | `#FFD166` |
+| `10 - 50 MW` | Medio | `#F8961E` |
+| `50 - 200 MW` | Alto | `#E94F37` |
+| `> 200 MW` | Muy alto | `#8E1B1B` |
 
 Estas categorías son una regla visual del prototipo y no una escala oficial de
 riesgo o severidad publicada por NASA FIRMS.

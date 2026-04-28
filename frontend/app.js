@@ -507,10 +507,10 @@ const WMS_LEGENDS = {
 };
 
 const FIRMS_FRP_CLASSES = [
-  { color: '#FFD166', label: '0-5 MW: débil' },
-  { color: '#F8961E', label: '5-20 MW: moderada' },
-  { color: '#E94F37', label: '20-75 MW: alta' },
-  { color: '#8E1B1B', label: '>75 MW: muy alta' },
+  { color: '#FFD166', label: '<10 MW: bajo' },
+  { color: '#F8961E', label: '10-50 MW: medio' },
+  { color: '#E94F37', label: '50-200 MW: alto' },
+  { color: '#8E1B1B', label: '>200 MW: muy alto' },
 ];
 
 const FIRMS_CONFIDENCE_STYLES = {
@@ -549,9 +549,9 @@ function getFireBorderWeight(f) {
 
 function getFireRadius(f) {
   const frp = Number(f.frp) || 0;
-  if (frp > 75) return 11;
-  if (frp > 20) return 9;
-  if (frp > 5) return 7;
+  if (frp > 200) return 11;
+  if (frp >= 50) return 9;
+  if (frp >= 10) return 7;
   return 5;
 }
 

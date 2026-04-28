@@ -2408,10 +2408,10 @@ def is_in_spain(lat: float, lon: float) -> bool:
     return _SPAIN_GEOM.covers(Point(lon, lat))
 
 def classify_frp(frp: float) -> tuple[str, str]:
-    if frp > 75: return "Muy alta", "#8E1B1B"
-    if frp > 20: return "Alta",     "#E94F37"
-    if frp > 5:  return "Moderada", "#F8961E"
-    return             "Débil",     "#FFD166"
+    if frp > 200: return "Muy alto", "#8E1B1B"
+    if frp >= 50: return "Alto",     "#E94F37"
+    if frp >= 10: return "Medio",    "#F8961E"
+    return              "Bajo",      "#FFD166"
 
 def normalize_firms_confidence(value: str | None) -> str:
     raw = (value or "").strip().lower()

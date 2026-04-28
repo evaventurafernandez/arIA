@@ -272,7 +272,7 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 
 - Al iniciar la aplicación, se carga `data/boundaries/spain_nuts_2024_01m.geojson` para filtrar detecciones de FIRMS por punto en MultiPolygon. Este GeoJSON local procede de GISCO/NUTS 2024 y cubre Península, Baleares, Canarias, Ceuta y Melilla.
 - La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon y se conservan sólo detecciones `confidence` nominal/alta (`n`/`h`).
-- La simbología FIRMS usa `frp` como potencia radiativa del foco en MW mediante categorías visuales de intensidad: 0-5, 5-20, 20-75 y >75 MW. No son umbrales oficiales NASA de gravedad.
+- La simbología FIRMS usa `frp` como potencia radiativa del foco en MW mediante categorías visuales de intensidad: <10, 10-50, 50-200 y >200 MW. No son umbrales oficiales NASA de gravedad.
 - Los avisos de AEMET se cargan en memoria durante el arranque. Los focos NASA FIRMS se piden al backend cada vez que el visor se carga o recarga.
 - La capa `landcover` se valida en arranque comprobando acceso a `pub.landcover_filtered`, `pub.landcover_mvt_source` y, si existe, `pub.landcover_mvt_class_source`.
 - El visor renderiza `landcover` con `Leaflet.VectorGrid` sobre teselas `MVT` servidas por FastAPI desde PostGIS, usando `pub.landcover_mvt_class_source` hasta `z=8` y `pub.landcover_mvt_source` a partir de `z=9`.
