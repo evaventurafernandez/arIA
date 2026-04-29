@@ -70,6 +70,9 @@ resetBtn.onAdd = () => {
     // Desactivar CORINE
     if (corineLayer) { map.removeLayer(corineLayer); }
     corineVisible = false;
+    const chkNucleos = document.getElementById('chk-nucleos_poblacion');
+    if (chkNucleos) chkNucleos.checked = false;
+    toggleNucleos(false);
     // Desactivar burnt area diaria
     const chkBurntArea = document.getElementById('chk-burnt_area_daily');
     if (chkBurntArea) chkBurntArea.checked = false;
@@ -105,6 +108,7 @@ resetBtn.addTo(map);
 const EFFIS_URL = 'https://maps.effis.emergency.copernicus.eu/effis';
 const EFFIS_FIRES_URL = '/api/effis/wmts';
 const SPAIN_BOUNDARY_URL = '/api/boundaries/spain';
+const LANDCOVER_WMS_CRS = L.CRS.EPSG4326;
 
 function localIsoDate(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -129,6 +133,9 @@ const AEMET_MAX_TEMP_TIMELINE_URL = '/api/aemet/max-temperature/timeline';
 const AEMET_MAX_TEMP_DEFAULT_DATE_FROM = '2025-05-01';
 const AEMET_MAX_TEMP_DEFAULT_DATE_TO = '2025-08-31';
 const AEMET_MAX_TEMP_MVT_LAYER_NAME = 'aemet_max_temp';
+const NUCLEOS_VECTOR_TILE_URL = '/api/nucleos/tiles/{z}/{x}/{y}.mvt';
+const NUCLEOS_MVT_LAYER_NAME = 'nucleos_poblacion';
+const NUCLEOS_MIN_ZOOM = 8;
 const HISTORICAL_DATA_FETCH_OPTIONS = { cache: 'force-cache' };
 
 const WMS_DEFS = {
@@ -167,6 +174,7 @@ const WMS_DEFS = {
     time:    null,                    // capa estática, cada 6 años
     opacity: 0.55,
     version: '1.3.0',
+    crs:     LANDCOVER_WMS_CRS,
     minZoom: 8,                       // visible a partir de zoom 8
   },
 };
@@ -176,6 +184,7 @@ const SPAIN_BOUNDS = L.latLngBounds([27.5, -18.5], [43.9, 4.5]);
 const WMS_LAYER_PANE = 'wmsLayerPane';
 const BURNT_AREA_LOCATOR_PANE = 'burntAreaLocatorPane';
 const AEMET_MAX_TEMP_PANE = 'aemetMaxTempPane';
+const NUCLEOS_PANE = 'nucleosPoblacionPane';
 const CORINE_SELECTION_PANE = 'corineSelectionPane';
 let spainBoundaryData = null;
 let spainBoundaryPromise = null;
@@ -212,6 +221,10 @@ let aemetMaxTempTimelineByDate = new Map();
 let aemetMaxTempLoadingPromise = null;
 let aemetMaxTempError = null;
 let aemetMaxTempLayer = null;
+let nucleosLayer = null;
+let nucleosVisible = false;
+let nucleosTooltip = null;
+let nucleosMapPopup = null;
 
 map.createPane(WMS_LAYER_PANE);
 map.getPane(WMS_LAYER_PANE).style.zIndex = 250;
@@ -220,6 +233,8 @@ map.getPane(BURNT_AREA_LOCATOR_PANE).style.zIndex = 285;
 map.getPane(BURNT_AREA_LOCATOR_PANE).style.pointerEvents = 'none';
 map.createPane(AEMET_MAX_TEMP_PANE);
 map.getPane(AEMET_MAX_TEMP_PANE).style.zIndex = 330;
+map.createPane(NUCLEOS_PANE);
+map.getPane(NUCLEOS_PANE).style.zIndex = 345;
 map.createPane(CORINE_SELECTION_PANE);
 map.getPane(CORINE_SELECTION_PANE).style.zIndex = 460;
 map.getPane(CORINE_SELECTION_PANE).style.pointerEvents = 'none';
@@ -397,6 +412,7 @@ function buildWMS(key) {
   };
   if (d.time) opts.TIME = d.time;
   if (d.minZoom) opts.minZoom = d.minZoom;
+  if (d.crs) opts.crs = d.crs;
   return d.clipToSpain
     ? new SpainClippedWMSLayer(d.url, opts)
     : L.tileLayer.wms(d.url, opts);
@@ -574,9 +590,10 @@ function updateLegend() {
  
   const wmsKeys = Object.keys(wmsActive);
   const showCorine = corineVisible && corineLayer;
+  const showNucleos = nucleosVisible && nucleosLayer;
   const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
   const showAemetMaxTemp = aemetMaxTempVisible && !aemetMaxTempError;
-  if (!wmsKeys.length && !showCorine && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
+  if (!wmsKeys.length && !showCorine && !showNucleos && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
  
   el.style.display = 'block';
 
@@ -633,6 +650,20 @@ function updateLegend() {
     </div>`;
   })() : '';
 
+  const nucleosHtml = showNucleos ? (() => {
+    const items = NUCLEOS_LEGEND.items.map(i =>
+      `<div class="leg-item">
+        <span class="leg-dot" style="background:${i.color}"></span>
+        <span class="leg-label">${i.label}</span>
+      </div>`
+    ).join('');
+    return `<div class="leg-block">
+      <div class="leg-title">${NUCLEOS_LEGEND.title}</div>
+      ${items}
+      <div class="leg-note">${NUCLEOS_LEGEND.note}</div>
+    </div>`;
+  })() : '';
+
   const aemetMaxTempHtml = showAemetMaxTemp ? `<div class="leg-block">
       <div class="leg-title">Avisos AEMET temperaturas máximas</div>
       <div class="leg-item">
@@ -650,7 +681,7 @@ function updateLegend() {
       <div class="leg-note">Capa histórica diaria filtrada a AT;Temperaturas máximas.</div>
     </div>` : '';
  
-  el.innerHTML = firmsHtml + aemetMaxTempHtml + wmsHtml + corineHtml;
+  el.innerHTML = firmsHtml + aemetMaxTempHtml + wmsHtml + corineHtml + nucleosHtml;
 }
  
 // CORINE (vector tiles MVT desde backend)
@@ -689,6 +720,145 @@ const CORINE_LEGEND = {
   items: CORINE_CLASSES.map(item => ({ color: item.color, label: item.label })),
   note: 'CORINE Land Cover 2018 - IGN/CNIG - selección filtrada de usos del suelo'
 };
+
+const NUCLEOS_POPULATION_CLASSES = [
+  { code: 'sin_dato', color: '#8a93a5', label: 'Sin dato' },
+  { code: 'sin_poblacion', color: '#6b7280', label: '0 hab.' },
+  { code: 'menor_100', color: '#7fc97f', label: '< 100' },
+  { code: '100_499', color: '#4db6ac', label: '100-499' },
+  { code: '500_4999', color: '#3f88c5', label: '500-4.999' },
+  { code: '5000_49999', color: '#f2c14e', label: '5.000-49.999' },
+  { code: '50000_mas', color: '#e76f51', label: '>= 50.000' },
+];
+
+const NUCLEOS_POPULATION_INDEX = Object.fromEntries(
+  NUCLEOS_POPULATION_CLASSES.map(item => [item.code, item])
+);
+
+const NUCLEOS_LEGEND = {
+  title: 'Núcleos de población',
+  items: NUCLEOS_POPULATION_CLASSES.map(item => ({ color: item.color, label: item.label })),
+  note: `BTN IGN - polígonos visibles desde zoom ${NUCLEOS_MIN_ZOOM}`
+};
+
+function getNucleosPopulationInfo(properties) {
+  return NUCLEOS_POPULATION_INDEX[properties.population_class] || NUCLEOS_POPULATION_INDEX.sin_dato;
+}
+
+function formatNucleosHabitantes(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return 'sin dato';
+  return Math.round(numericValue).toLocaleString('es-ES');
+}
+
+function getNucleosFeatureStyle(properties) {
+  const classInfo = getNucleosPopulationInfo(properties);
+  const rank = Number(properties.population_rank) || 0;
+  const isCapital = Boolean(properties.is_capital);
+  return {
+    fill: true,
+    fillColor: classInfo.color,
+    fillOpacity: Math.min(0.2 + rank * 0.045, 0.48),
+    color: isCapital ? '#ffffff' : '#17202c',
+    opacity: isCapital ? 0.92 : 0.72,
+    weight: isCapital ? 1.1 : 0.45,
+  };
+}
+
+function clearNucleosTooltip() {
+  if (nucleosTooltip) {
+    map.removeLayer(nucleosTooltip);
+    nucleosTooltip = null;
+  }
+}
+
+function closeNucleosMapPopup() {
+  const popup = nucleosMapPopup;
+  nucleosMapPopup = null;
+  if (!popup) return;
+  if (map.closePopup) map.closePopup(popup);
+}
+
+function openNucleosMapPopup(latlng, content) {
+  closeNucleosMapPopup();
+  nucleosMapPopup = L.popup({ className: 'nucleos-poblacion-popup' })
+    .setLatLng(latlng)
+    .setContent(content);
+  nucleosMapPopup.openOn(map);
+  return nucleosMapPopup;
+}
+
+function buildNucleosPopupContent(properties) {
+  const classInfo = getNucleosPopulationInfo(properties);
+  const nombre = properties.nombre || properties.label || 'Núcleo de población';
+  const habitantes = formatNucleosHabitantes(properties.habitantes);
+  const capital = properties.is_capital ? '<br>Capitalidad: sí' : '';
+  const tipo = properties.tipo_label ? `<br>${escapeHtml(properties.tipo_label)}` : '';
+  const codigo = properties.codigo_ep ? `<br>Código EP: ${escapeHtml(properties.codigo_ep)}` : '';
+  return `<b>${escapeHtml(nombre)}</b><br>`+
+    `Habitantes: ${escapeHtml(habitantes)}<br>`+
+    `Clase: ${escapeHtml(classInfo.label)}`+
+    `${tipo}${capital}${codigo}`;
+}
+
+function ensureNucleosTooltip(latlng, content) {
+  if (!nucleosTooltip) {
+    nucleosTooltip = L.tooltip({
+      permanent: false,
+      sticky: true,
+      direction: 'top',
+      opacity: 0.95,
+    });
+  }
+  nucleosTooltip.setLatLng(latlng).setContent(content);
+  if (!map.hasLayer(nucleosTooltip)) nucleosTooltip.addTo(map);
+}
+
+function buildNucleosLayer() {
+  const layerStyles = {
+    [NUCLEOS_MVT_LAYER_NAME]: properties => getNucleosFeatureStyle(properties),
+    nucleos_poblacion_mvt_source: properties => getNucleosFeatureStyle(properties),
+    'pub.nucleos_poblacion_mvt_source': properties => getNucleosFeatureStyle(properties),
+  };
+  const layer = L.vectorGrid.protobuf(NUCLEOS_VECTOR_TILE_URL, {
+    rendererFactory: L.canvas.tile,
+    pane: NUCLEOS_PANE,
+    interactive: true,
+    minZoom: NUCLEOS_MIN_ZOOM,
+    maxNativeZoom: 18,
+    vectorTileLayerStyles: layerStyles,
+    getFeatureId: feature => feature.properties.core_feature_id,
+  });
+  layer.on('mouseover', e => {
+    const props = e.layer.properties || {};
+    const habitantes = formatNucleosHabitantes(props.habitantes);
+    ensureNucleosTooltip(e.latlng, `${escapeHtml(props.nombre || 'Núcleo de población')} · ${escapeHtml(habitantes)} hab.`);
+  });
+  layer.on('mousemove', e => {
+    if (nucleosTooltip) nucleosTooltip.setLatLng(e.latlng);
+  });
+  layer.on('mouseout', () => {
+    clearNucleosTooltip();
+  });
+  layer.on('click', e => {
+    const props = e.layer.properties || {};
+    openNucleosMapPopup(e.latlng, buildNucleosPopupContent(props));
+  });
+  return layer;
+}
+
+function toggleNucleos(enabled) {
+  nucleosVisible = enabled;
+  if (enabled) {
+    if (!nucleosLayer) nucleosLayer = buildNucleosLayer();
+    if (nucleosLayer) nucleosLayer.addTo(map);
+  } else {
+    clearNucleosTooltip();
+    closeNucleosMapPopup();
+    if (nucleosLayer) map.removeLayer(nucleosLayer);
+  }
+  updateLegend();
+}
  
 function getCorineFeatureStyle(properties) {
   const classInfo = CORINE_CLASS_INDEX[properties.class_code] || null;
@@ -829,7 +999,35 @@ function isCorineWmsActive() {
   return Boolean(wmsActive.corine_wms);
 }
 
+function getLandcoverWmsCrs() {
+  return WMS_DEFS.corine_wms.crs || map.options.crs;
+}
+
+function buildWmsBbox(bounds, crs, version = '1.3.0') {
+  const southWestProjected = crs.project(bounds.getSouthWest());
+  const northEastProjected = crs.project(bounds.getNorthEast());
+  const isWms13Geographic = version === '1.3.0' && crs.code === 'EPSG:4326';
+
+  if (isWms13Geographic) {
+    return [
+      southWestProjected.y,
+      southWestProjected.x,
+      northEastProjected.y,
+      northEastProjected.x,
+    ].join(',');
+  }
+
+  return [
+    southWestProjected.x,
+    southWestProjected.y,
+    northEastProjected.x,
+    northEastProjected.y,
+  ].join(',');
+}
+
 function buildLandcoverPointQuery(latlng, options = {}) {
+  const wmsCrs = getLandcoverWmsCrs();
+  const wmsVersion = WMS_DEFS.corine_wms.version || '1.3.0';
   const queryZoom = Number.isFinite(Number(options.queryZoom))
     ? Number(options.queryZoom)
     : null;
@@ -839,8 +1037,7 @@ function buildLandcoverPointQuery(latlng, options = {}) {
   const height = Number.isFinite(Number(options.height))
     ? Math.max(3, Math.round(Number(options.height)))
     : map.getSize().y;
-  let southWestProjected;
-  let northEastProjected;
+  let queryBounds;
   let i;
   let j;
 
@@ -856,16 +1053,13 @@ function buildLandcoverPointQuery(latlng, options = {}) {
       L.point(centerPoint.x + halfWidth, centerPoint.y - halfHeight),
       queryZoom
     );
-    southWestProjected = map.options.crs.project(southWest);
-    northEastProjected = map.options.crs.project(northEast);
+    queryBounds = L.latLngBounds(southWest, northEast);
     i = Math.floor(width / 2);
     j = Math.floor(height / 2);
   } else {
-    const bounds = map.getBounds();
+    queryBounds = map.getBounds();
     const size = map.getSize();
     const clickPoint = map.latLngToContainerPoint(latlng);
-    southWestProjected = map.options.crs.project(bounds.getSouthWest());
-    northEastProjected = map.options.crs.project(bounds.getNorthEast());
     i = Math.max(0, Math.min(size.x - 1, Math.round(clickPoint.x)));
     j = Math.max(0, Math.min(size.y - 1, Math.round(clickPoint.y)));
   }
@@ -873,17 +1067,12 @@ function buildLandcoverPointQuery(latlng, options = {}) {
   return {
     lon: latlng.lng,
     lat: latlng.lat,
-    bbox: [
-      southWestProjected.x,
-      southWestProjected.y,
-      northEastProjected.x,
-      northEastProjected.y,
-    ].join(','),
+    bbox: buildWmsBbox(queryBounds, wmsCrs, wmsVersion),
     width,
     height,
     i,
     j,
-    crs: 'EPSG:3857',
+    crs: wmsCrs.code,
   };
 }
 
@@ -3433,6 +3622,11 @@ if (chkBurntArea) {
   chkBurntArea.addEventListener('change', e => {
     void toggleBurntAreaLayer(e.target.checked);
   });
+}
+
+const chkNucleos = document.getElementById('chk-nucleos_poblacion');
+if (chkNucleos) {
+  chkNucleos.addEventListener('change', e => toggleNucleos(e.target.checked));
 }
 
 const chkFirmsHistory = document.getElementById('chk-firms_history');

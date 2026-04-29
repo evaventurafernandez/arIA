@@ -70,15 +70,29 @@ alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
 db_pool: ConnectionPool | None = None
 landcover_class_tile_source_available = False
+nucleos_mvt_source_available = False
 
 LANDCOVER_TILE_OVERVIEW_MAX_ZOOM = 8
 LANDCOVER_LAYER_METADATA_CACHE_TTL_SECONDS = 300.0
+NUCLEOS_LAYER_ID = "nucleos_poblacion"
+NUCLEOS_LAYER_NAME = "Nucleos de poblacion BTN (IGN)"
+NUCLEOS_MVT_LAYER_NAME = "nucleos_poblacion"
+NUCLEOS_TILE_MIN_ZOOM = 8
+NUCLEOS_LAYER_METADATA_CACHE_TTL_SECONDS = 300.0
 
 landcover_publication_cache_info = {
     "feature_count": 0,
     "refreshed_at": None,
 }
 landcover_layer_metadata_cache = {
+    "value": None,
+    "expires_at": 0.0,
+}
+nucleos_publication_cache_info = {
+    "feature_count": 0,
+    "refreshed_at": None,
+}
+nucleos_layer_metadata_cache = {
     "value": None,
     "expires_at": 0.0,
 }
@@ -1653,10 +1667,39 @@ def reset_landcover_layer_metadata_cache() -> None:
         "expires_at": 0.0,
     }
 
+def set_nucleos_publication_cache(feature_count: int, refreshed_at: datetime | None) -> None:
+    global nucleos_publication_cache_info
+    nucleos_publication_cache_info = {
+        "feature_count": int(feature_count),
+        "refreshed_at": refreshed_at,
+    }
+
+def reset_nucleos_layer_metadata_cache() -> None:
+    global nucleos_layer_metadata_cache
+    nucleos_layer_metadata_cache = {
+        "value": None,
+        "expires_at": 0.0,
+    }
+
 def fetch_latest_landcover_refresh_timestamp() -> datetime | None:
     sql = """
     SELECT canonicalized_at
     FROM core.landcover_polygon
+    ORDER BY canonicalized_at DESC
+    LIMIT 1
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    return row[0] if row else None
+
+def fetch_latest_nucleos_refresh_timestamp() -> datetime | None:
+    if not postgres_relation_exists("core.nucleos_poblacion_polygon"):
+        return None
+    sql = """
+    SELECT canonicalized_at
+    FROM core.nucleos_poblacion_polygon
     ORDER BY canonicalized_at DESC
     LIMIT 1
     """
@@ -1931,6 +1974,244 @@ def fetch_landcover_vector_tile(z: int, x: int, y: int) -> bytes:
     if z <= LANDCOVER_TILE_OVERVIEW_MAX_ZOOM and landcover_class_tile_source_available:
         return fetch_landcover_overview_vector_tile(z, x, y, tolerance)
     return fetch_landcover_detail_vector_tile(z, x, y, tolerance)
+
+def query_nucleos_layer_metadata() -> dict:
+    if not postgres_relation_exists("core.nucleos_poblacion_polygon"):
+        return {
+            "layer_id": NUCLEOS_LAYER_ID,
+            "name": NUCLEOS_LAYER_NAME,
+            "available": False,
+            "geometry_type": "MultiPolygon",
+            "srid": 4326,
+            "feature_count": 0,
+            "bbox": None,
+            "refreshed_at": None,
+            "source_table": "core.nucleos_poblacion_polygon",
+            "tile_source_view": "pub.nucleos_poblacion_mvt_source",
+            "tile_feature_count": 0,
+            "render_mode": "mvt",
+            "tile_format": "application/vnd.mapbox-vector-tile",
+            "tile_url_template": "/api/nucleos/tiles/{z}/{x}/{y}.mvt",
+            "tile_layer_name": NUCLEOS_MVT_LAYER_NAME,
+            "min_zoom": NUCLEOS_TILE_MIN_ZOOM,
+        }
+
+    sql = """
+    SELECT jsonb_build_object(
+        'layer_id', %s::text,
+        'name', %s::text,
+        'available', COUNT(*) > 0,
+        'geometry_type', 'MultiPolygon',
+        'srid', 4326,
+        'feature_count', COUNT(*),
+        'bbox', CASE
+            WHEN COUNT(*) > 0 THEN jsonb_build_array(
+                ST_XMin(ST_Extent(geom)),
+                ST_YMin(ST_Extent(geom)),
+                ST_XMax(ST_Extent(geom)),
+                ST_YMax(ST_Extent(geom))
+            )
+            ELSE NULL
+        END,
+        'refreshed_at', max(canonicalized_at),
+        'source_table', 'core.nucleos_poblacion_polygon',
+        'tile_source_view', 'pub.nucleos_poblacion_mvt_source',
+        'tile_feature_count', CASE
+            WHEN to_regclass('pub.nucleos_poblacion_mvt_source') IS NOT NULL
+            THEN (SELECT count(*) FROM pub.nucleos_poblacion_mvt_source)
+            ELSE 0
+        END,
+        'render_mode', 'mvt',
+        'tile_format', 'application/vnd.mapbox-vector-tile',
+        'tile_url_template', '/api/nucleos/tiles/{z}/{x}/{y}.mvt',
+        'tile_layer_name', %s::text,
+        'min_zoom', %s::integer
+    )
+    FROM core.nucleos_poblacion_polygon
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (NUCLEOS_LAYER_ID, NUCLEOS_LAYER_NAME, NUCLEOS_MVT_LAYER_NAME, NUCLEOS_TILE_MIN_ZOOM))
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else {
+        "layer_id": NUCLEOS_LAYER_ID,
+        "name": NUCLEOS_LAYER_NAME,
+        "available": False,
+        "geometry_type": "MultiPolygon",
+        "srid": 4326,
+        "feature_count": 0,
+        "bbox": None,
+        "refreshed_at": None,
+        "source_table": "core.nucleos_poblacion_polygon",
+        "tile_source_view": "pub.nucleos_poblacion_mvt_source",
+        "tile_feature_count": 0,
+        "render_mode": "mvt",
+        "tile_format": "application/vnd.mapbox-vector-tile",
+        "tile_url_template": "/api/nucleos/tiles/{z}/{x}/{y}.mvt",
+        "tile_layer_name": NUCLEOS_MVT_LAYER_NAME,
+        "min_zoom": NUCLEOS_TILE_MIN_ZOOM,
+    }
+
+def fetch_nucleos_layer_metadata() -> dict:
+    now = time.monotonic()
+    cached_value = nucleos_layer_metadata_cache["value"]
+    if cached_value is not None and now < nucleos_layer_metadata_cache["expires_at"]:
+        return cached_value
+
+    data = query_nucleos_layer_metadata()
+    nucleos_layer_metadata_cache["value"] = data
+    nucleos_layer_metadata_cache["expires_at"] = now + NUCLEOS_LAYER_METADATA_CACHE_TTL_SECONDS
+    return data
+
+def fetch_nucleos_publication_cache_info() -> dict:
+    return nucleos_publication_cache_info
+
+def build_nucleos_cache_headers() -> dict[str, str]:
+    cache_info = fetch_nucleos_publication_cache_info()
+    feature_count = int(cache_info["feature_count"] or 0)
+    refreshed_at = cache_info["refreshed_at"]
+    if feature_count <= 0 or refreshed_at is None:
+        return {"Cache-Control": "no-store"}
+
+    headers = {"Cache-Control": "public, max-age=300"}
+    refreshed_at_utc = refreshed_at.astimezone(timezone.utc)
+    headers["Last-Modified"] = format_datetime(refreshed_at_utc, usegmt=True)
+    headers["ETag"] = f'W/"nucleos-{feature_count}-{int(refreshed_at_utc.timestamp())}"'
+    return headers
+
+def build_nucleos_tile_cache_headers() -> dict[str, str]:
+    headers = build_nucleos_cache_headers()
+    if headers.get("Cache-Control") == "no-store":
+        return headers
+    headers["Cache-Control"] = "public, max-age=3600"
+    return headers
+
+def get_nucleos_tile_simplification_tolerance(z: int) -> float:
+    if z >= 15:
+        return 0.0
+    meters_per_pixel = 156543.03392804097 / (2 ** z)
+    if z <= 8:
+        factor = 0.35
+    elif z <= 10:
+        factor = 0.18
+    elif z <= 12:
+        factor = 0.08
+    else:
+        factor = 0.03
+    return meters_per_pixel * factor
+
+def get_nucleos_tile_min_population_rank(z: int) -> int:
+    if z <= 8:
+        return 5
+    if z == 9:
+        return 4
+    if z == 10:
+        return 3
+    return 0
+
+def execute_nucleos_vector_tile_query(sql: str, params: tuple[object, ...]) -> bytes:
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(sql, params)
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return b""
+    return bytes(row[0])
+
+def fetch_nucleos_vector_tile(z: int, x: int, y: int) -> bytes:
+    if z < NUCLEOS_TILE_MIN_ZOOM:
+        return b""
+    if int(nucleos_publication_cache_info["feature_count"] or 0) <= 0:
+        return b""
+    tolerance = get_nucleos_tile_simplification_tolerance(z)
+    min_population_rank = get_nucleos_tile_min_population_rank(z)
+    sql = """
+    WITH tile_envelope AS (
+        SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+    ),
+    candidate_geom AS (
+        SELECT
+            src.core_feature_id,
+            src.nombre,
+            src.habitantes,
+            src.population_class,
+            src.population_rank,
+            src.tipo_code,
+            src.tipo_label,
+            src.ine_code,
+            src.codigo_ep,
+            src.id_ep,
+            src.id_ng,
+            src.prioridad,
+            src.capital_code,
+            src.is_capital,
+            src.geom
+        FROM pub.nucleos_poblacion_mvt_source AS src
+        CROSS JOIN tile_envelope AS env
+        WHERE src.geom && env.geom
+          AND ST_Intersects(src.geom, env.geom)
+          AND (src.population_rank >= %s OR src.is_capital)
+    ),
+    mvtgeom AS (
+        SELECT
+            src.core_feature_id,
+            src.core_feature_id AS feature_id,
+            src.nombre,
+            src.nombre AS label,
+            src.habitantes,
+            src.population_class,
+            src.population_rank,
+            src.tipo_code,
+            src.tipo_label,
+            src.ine_code,
+            src.codigo_ep,
+            src.id_ep,
+            src.id_ng,
+            src.prioridad,
+            src.capital_code,
+            src.is_capital,
+            ST_AsMVTGeom(
+                CASE
+                    WHEN %s > 0 THEN ST_SimplifyPreserveTopology(src.geom, %s)
+                    ELSE src.geom
+                END,
+                env.geom,
+                4096,
+                64,
+                true
+            ) AS geom
+        FROM candidate_geom AS src
+        CROSS JOIN tile_envelope AS env
+    )
+    SELECT ST_AsMVT(tile_rows, %s::text, 4096, 'geom')
+    FROM (
+        SELECT
+            core_feature_id,
+            feature_id,
+            nombre,
+            label,
+            habitantes,
+            population_class,
+            population_rank,
+            tipo_code,
+            tipo_label,
+            ine_code,
+            codigo_ep,
+            id_ep,
+            id_ng,
+            prioridad,
+            capital_code,
+            is_capital,
+            geom
+        FROM mvtgeom
+        WHERE geom IS NOT NULL
+    ) AS tile_rows
+    """
+    return execute_nucleos_vector_tile_query(
+        sql,
+        (z, x, y, min_population_rank, tolerance, tolerance, NUCLEOS_MVT_LAYER_NAME),
+    )
 
 def get_landcover_zoom_config(
     zoom: int,
@@ -2701,7 +2982,7 @@ fetch_firms_fires = fetch_spain_hotspots
 # Lifespan 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alerts_cache, fires_cache, db_pool, landcover_class_tile_source_available
+    global alerts_cache, fires_cache, db_pool, landcover_class_tile_source_available, nucleos_mvt_source_available
     print("Cargando geometria de Espana...")
     await load_spain_geometry()
 
@@ -2738,6 +3019,27 @@ async def lifespan(app: FastAPI):
                 else ", sin fuente agregada de bajo zoom"
             )
             + ")"
+        )
+        nucleos_tile_count = 0
+        nucleos_refreshed_at = None
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('pub.nucleos_poblacion_mvt_source')")
+                nucleos_mvt_source_available = cur.fetchone()[0] is not None
+                if nucleos_mvt_source_available:
+                    cur.execute("SELECT count(*) FROM pub.nucleos_poblacion_mvt_source")
+                    nucleos_tile_count = cur.fetchone()[0]
+        if nucleos_tile_count > 0:
+            nucleos_refreshed_at = fetch_latest_nucleos_refresh_timestamp()
+        set_nucleos_publication_cache(nucleos_tile_count, nucleos_refreshed_at)
+        reset_nucleos_layer_metadata_cache()
+        print(
+            "  Nucleos de poblacion "
+            + (
+                f"listos (pub.nucleos_poblacion_mvt_source={nucleos_tile_count} features para MVT)"
+                if nucleos_mvt_source_available
+                else "sin fuente MVT publicada"
+            )
         )
     except Exception:
         if db_pool is not None:
@@ -3078,6 +3380,28 @@ def get_firms_historical_features(
         headers={"Cache-Control": "public, max-age=86400"},
         media_type="application/geo+json",
     )
+
+@app.get("/api/layers/nucleos")
+def get_nucleos_layer_metadata():
+    """Metadatos basicos de la capa de nucleos de poblacion publicada."""
+    try:
+        data = fetch_nucleos_layer_metadata()
+        headers = build_nucleos_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando metadata de nucleos: {exc}") from exc
+    return JSONResponse(content=data, headers=headers)
+
+@app.get("/api/nucleos/tiles/{z:int}/{x:int}/{y:int}.mvt")
+def get_nucleos_vector_tile(z: int, x: int, y: int):
+    """Vector tiles MVT de nucleos de poblacion servidas desde PostGIS."""
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
+    try:
+        tile = fetch_nucleos_vector_tile(z, x, y)
+        headers = build_nucleos_tile_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT de nucleos: {exc}") from exc
+    return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
  
 @app.get("/api/landcover")
 def get_landcover():
