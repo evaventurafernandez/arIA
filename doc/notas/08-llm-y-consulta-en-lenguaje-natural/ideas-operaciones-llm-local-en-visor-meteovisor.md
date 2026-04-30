@@ -6,16 +6,17 @@ tags:
   - tfg
   - llm
   - tool-calling
+  - mcp
   - visor-gis
   - arquitectura
   - alcance
-contexto: "Propuesta inicial para concretar el componente LLM del visor MeteoVisor descrito en los requisitos funcionales RF-46 a RF-73. La nota fija qué operaciones puede asumir un modelo local pequeño (Qwen2.5, Llama 3.2, Gemma 2/3) y bajo qué arquitectura, sin invadir cálculos espaciales que deben seguir en PostGIS."
+contexto: "Propuesta inicial para concretar el componente LLM del visor MeteoVisor descrito en los requisitos funcionales RF-46 a RF-73. La nota fija qué operaciones puede asumir un modelo local pequeño (Qwen2.5, Llama 3.2, Gemma 2/3), bajo qué arquitectura (incluida la opción de exponer las operaciones como servidor MCP siguiendo el patrón del CARTO MCP Server), sin invadir cálculos espaciales que deben seguir en PostGIS."
 fuente_existe: false
 fuente_tipo: elaboración propia
-fuente_descripción: "elaboración propia a partir de la documentación del proyecto (README.md, doc/requisitos_funcionales_visor_emergencias_meteo.md, doc/notas_objetivo_tfg.md) y conversación de trabajo del 2026-04-28."
+fuente_descripción: "elaboración propia a partir de la documentación del proyecto (README.md, doc/requisitos_funcionales_visor_emergencias_meteo.md, doc/notas_objetivo_tfg.md), conversación de trabajo del 2026-04-28 y referencia complementaria al artículo de CARTO sobre su MCP Server consultado el 2026-04-30."
 fuente_url: ""
 autor_o_entidad: "pendiente de confirmar"
-fecha_fuente: "2026-04-28"
+fecha_fuente: "2026-04-30"
 licencia_o_copyright: "pendiente de confirmar"
 condiciones_de_uso: "pendiente de confirmar"
 grado_de_confianza: medio
@@ -24,6 +25,7 @@ pendientes_de_verificar:
   - "Confirmar el modelo local concreto a usar y el hardware disponible para servirlo."
   - "Validar con el profesor el alcance: si el TFG defenderá Fase 1 (preparación técnica del LLM) o Fase 2 (asistente operativo básico)."
   - "Decidir el catálogo final de tools antes de implementar el endpoint /api/assistant/chat."
+  - "Decidir si las tools del visor se exponen como endpoint propietario, como servidor MCP local, o ambos."
 ---
 
 # Ideas de operaciones para un LLM local integrado en el visor MeteoVisor
@@ -102,6 +104,43 @@ Cobertura aproximada de RF-43, RF-45, RF-58.
 
 Con esta arquitectura, una consulta como "muéveme el mapa a Cáceres y enséñame focos de hoy con FWI" se descompone en algo del estilo `[searchPlace("Cáceres"), flyTo(bbox), toggleLayer("fwi", true), queryFires({date: "today"})]`, sin que el LLM toque coordenadas crudas ni datos de la base.
 
+### Variante: exponer las tools como servidor MCP
+
+El Model Context Protocol (MCP) es un estándar abierto promovido por Anthropic para que cualquier agente de IA descubra y ejecute herramientas externas de forma uniforme. CARTO ha publicado un *CARTO MCP Server* que expone su catálogo de operaciones geoespaciales (más de 200 componentes de CARTO Workflows, incluidos buffers, joins, geocoding, routing, hotspot analysis y modelos predictivos) como tools MCP consumibles desde Claude, ChatGPT, Gemini o Cursor, manteniendo los datos en el data warehouse del cliente sin replicación.
+
+Aplicado a MeteoVisor, este patrón permitiría montar un **servidor MCP local en Python** (con el SDK oficial `mcp`) que exponga el mismo catálogo de tools descrito más arriba, con dos consecuencias:
+
+- El frontend del visor sigue conectándose a un cliente MCP interno alimentado por un LLM local (Qwen2.5-7B-Instruct vía Ollama), sin cambiar la experiencia de usuario.
+- El mismo servidor MCP queda disponible para cualquier cliente compatible (Claude Desktop, Cursor) que pueda conectarse en local. Esto da una demostración secundaria muy potente de cara al tribunal: probar el sistema desde un cliente externo estándar, no solo desde el panel propio.
+
+Comparativa rápida frente al endpoint propietario `/api/assistant/chat`:
+
+- Endpoint propio: menor esfuerzo, acoplado al visor, ad hoc.
+- Servidor MCP: mayor esfuerzo inicial, protocolo abierto, las tools son reutilizables por terceros y la defensa académica sube de nivel ("operaciones GIS sobre datos reales expuestas como servicio interoperable estándar").
+
+No es una decisión excluyente. Una opción razonable es implementar el catálogo como **servidor MCP local** y consumirlo desde un endpoint de conveniencia `/api/assistant/chat` que actúa como cliente MCP servido por FastAPI hacia el frontend del visor.
+
+### Caso de uso paralelo al Ejemplo 3 de CARTO
+
+El Ejemplo 3 del artículo de CARTO describe un análisis de hotspots de colisiones de tráfico filtrable por rango de fechas, expuesto como tool y resuelto por un workflow de estadística espacial. La traslación natural a MeteoVisor es un **hotspot analysis del histórico FIRMS** sobre la base ya persistida en `core.firms_history`:
+
+- Consulta tipo: "muéstrame los puntos calientes de incendios en Galicia entre el 1 y el 15 de agosto de 2025".
+- Tool propuesta: `firms_hotspot_analysis(region|bbox, date_from, date_to, sensor?)`.
+- Implementación: consulta PostGIS con `ST_ClusterDBSCAN` o equivalente sobre `core.firms_history` filtrado por fecha y territorio. El resultado es una capa GeoJSON o MVT con los clusters detectados.
+- Respuesta: el frontend hace `flyTo` al bbox, dibuja la capa de clusters y el LLM devuelve un resumen del estilo "se detectan N hotspots, el más intenso en provincia X con FRP medio Y".
+
+Este caso cubre simultáneamente RF-25 (cruce con peligro de propagación), RF-28 (priorización visual), RF-50 (explicación comprensible), RF-60 (consultas evolutivas históricas) y es el primer Nivel 3 del catálogo que merece la pena prototipar.
+
+### Diferencias importantes con el modelo de CARTO
+
+- CARTO se apoya en data warehouses cloud (BigQuery, Snowflake, Redshift, Databricks); MeteoVisor trabaja sobre PostgreSQL/PostGIS local. Es ventaja para el TFG: demo offline, sin claves cloud, sin coste por consulta.
+- CARTO ofrece más de 200 componentes; el alcance defendible para el TFG es exponer entre 5 y 10 tools específicas de avisos meteorológicos e incendios.
+- CARTO devuelve mapas embebidos en CARTO Builder; MeteoVisor devuelve cambios sobre el mismo Leaflet del visor, lo que evita dependencia de un visor externo.
+
+### Referencias externas consultadas
+
+- CARTO. "CARTO MCP Server: Turn your AI agents into geospatial experts". Consultado el 2026-04-30. URL aportada por el usuario en la conversación de origen. Licencia y condiciones de reutilización pendientes de verificar antes de citarlo en la memoria del TFG.
+
 ### Encaje con las fases del documento de requisitos
 
 - Fase 1 (MVP): preparar la arquitectura de tools y el catálogo funcional, sin asistente visible.
@@ -116,6 +155,8 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 - El frontend ya expone primitivas Leaflet para mover el mapa, activar capas WMS, alternar núcleos, aplicar filtros y abrir fichas.
 - Los requisitos RF-46 a RF-73 dedican una sección entera a la interfaz conversacional con LLM.
 - La nota de objetivos del TFG limita el papel del LLM a interfaz de consulta con trazabilidad, no a sistema de decisión.
+- CARTO ha publicado un servidor MCP que expone más de 200 componentes geoespaciales como tools consumibles por agentes compatibles con MCP (Claude, ChatGPT, Gemini, Cursor), manteniendo los datos en el data warehouse del cliente.
+- El Ejemplo 3 del artículo de CARTO describe un análisis de hotspots de colisiones de tráfico filtrable por rango de fechas, resuelto por un workflow de estadística espacial encapsulado como tool.
 
 ## Datos inferidos
 
@@ -123,6 +164,8 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 - El cuello de botella del componente LLM no será el modelo, sino la calidad del catálogo de tools y la trazabilidad del logging.
 - El endpoint `/api/assistant/chat` cabe en la arquitectura FastAPI actual sin rediseño.
 - "Gemma 4" y "Qwen 3.6" mencionados en la conversación de origen no existen como tales; las familias vivas son Gemma 2/3 y Qwen2.5/Qwen3.
+- El SDK oficial de MCP en Python permite montar un servidor MCP local que exponga las tools del visor sin acoplarlas a una plataforma cloud concreta.
+- Una arquitectura híbrida (servidor MCP local + endpoint FastAPI cliente del MCP) probablemente sea más defendible académicamente que un endpoint propietario aislado.
 
 ## Datos faltantes o ambiguos
 
@@ -131,3 +174,5 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 - Catálogo definitivo de tools y nombres exactos de cada operación.
 - Si el TFG defenderá Fase 1 cerrada o Fase 2 demostrable.
 - Cómo se va a validar la calidad del asistente de cara al tribunal: episodios reales, casos de uso predefinidos o evaluación cualitativa.
+- Si las tools se expondrán como endpoint propietario, como servidor MCP local o como ambos.
+- Licencia y condiciones de reutilización del artículo de CARTO antes de citarlo formalmente en la memoria.

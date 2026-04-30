@@ -24,6 +24,7 @@ SELECT
     is_capital,
     ST_Transform(geom, 3857)::geometry(MultiPolygon, 3857) AS geom
 FROM core.nucleos_poblacion_polygon
+WHERE habitantes > 0
 WITH NO DATA;
 
 CREATE UNIQUE INDEX nucleos_poblacion_mvt_source_feature_id_uidx
@@ -39,7 +40,7 @@ CREATE INDEX nucleos_poblacion_mvt_source_tipo_code_idx
 CREATE INDEX nucleos_poblacion_mvt_source_is_capital_idx
     ON pub.nucleos_poblacion_mvt_source (is_capital);
 
-COMMENT ON MATERIALIZED VIEW pub.nucleos_poblacion_mvt_source IS 'Publicacion derivada de nucleos de poblacion optimizada para servir vector tiles MVT en EPSG:3857';
+COMMENT ON MATERIALIZED VIEW pub.nucleos_poblacion_mvt_source IS 'Publicacion derivada de nucleos de poblacion con habitantes positivos, optimizada para servir vector tiles MVT en EPSG:3857';
 COMMENT ON COLUMN pub.nucleos_poblacion_mvt_source.core_feature_id IS 'Identificador estable de feature reutilizable para interactividad en cliente';
 COMMENT ON COLUMN pub.nucleos_poblacion_mvt_source.nombre IS 'Nombre publicado del nucleo';
 COMMENT ON COLUMN pub.nucleos_poblacion_mvt_source.habitantes IS 'Habitantes normalizados cuando estan disponibles';

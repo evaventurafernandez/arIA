@@ -465,7 +465,7 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
 
 /* Leyenda WMS */
 #wms-legend {
-  position: absolute; bottom: 100px; left: 10px; z-index: 900;
+  position: absolute; bottom: 18px; left: 10px; z-index: 900;
   background: #1a1d27ee; border: 1px solid #2a2d3a; border-radius: 8px;
   padding: 10px 12px; max-width: 250px; pointer-events: none;
 }

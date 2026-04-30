@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS core.nucleos_poblacion_polygon (
     etiqueta text,
     habitantes integer,
     population_class text NOT NULL CHECK (
-        population_class IN ('sin_dato', 'sin_poblacion', 'menor_100', '100_499', '500_4999', '5000_49999', '50000_mas')
+        population_class IN ('menor_100', '100_499', '500_4999', '5000_49999', '50000_mas')
     ),
-    population_rank smallint NOT NULL CHECK (population_rank BETWEEN 0 AND 6),
+    population_rank smallint NOT NULL CHECK (population_rank BETWEEN 1 AND 5),
     tipo_code text,
     tipo_label text NOT NULL,
     ine_code text,
@@ -60,8 +60,8 @@ COMMENT ON COLUMN core.nucleos_poblacion_polygon.source_objectid IS 'Identificad
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.ingest_id IS 'Carga concreta de ingest.ingest_file desde la que procede la feature';
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.nombre IS 'Nombre homogeneo publicado para el nucleo';
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.etiqueta IS 'Etiqueta original conservada como apoyo de rotulacion';
-COMMENT ON COLUMN core.nucleos_poblacion_polygon.habitantes IS 'Habitantes normalizados a entero cuando el origen los informa';
-COMMENT ON COLUMN core.nucleos_poblacion_polygon.population_class IS 'Clase de tamano poblacional para simbologia y filtrado';
+COMMENT ON COLUMN core.nucleos_poblacion_polygon.habitantes IS 'Habitantes normalizados a entero; la capa core excluye registros sin dato o con 0 habitantes';
+COMMENT ON COLUMN core.nucleos_poblacion_polygon.population_class IS 'Clase de tamano poblacional positiva para simbologia y filtrado';
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.population_rank IS 'Orden numerico de la clase poblacional';
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.tipo_code IS 'Codigo de tipo BTN 0502';
 COMMENT ON COLUMN core.nucleos_poblacion_polygon.tipo_label IS 'Etiqueta generica derivada del codigo de tipo BTN 0502';

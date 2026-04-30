@@ -21,6 +21,11 @@ GROUP BY population_class, population_rank
 ORDER BY population_rank;
 
 SELECT
+    count(*) FILTER (WHERE habitantes IS NULL) AS sin_dato_habitantes,
+    count(*) FILTER (WHERE habitantes <= 0) AS sin_habitantes_positivos
+FROM core.nucleos_poblacion_polygon;
+
+SELECT
     ST_XMin(ST_Extent(geom)) AS minx,
     ST_YMin(ST_Extent(geom)) AS miny,
     ST_XMax(ST_Extent(geom)) AS maxx,

@@ -2102,12 +2102,12 @@ def get_nucleos_tile_simplification_tolerance(z: int) -> float:
 
 def get_nucleos_tile_min_population_rank(z: int) -> int:
     if z <= 8:
-        return 5
-    if z == 9:
         return 4
-    if z == 10:
+    if z == 9:
         return 3
-    return 0
+    if z == 10:
+        return 2
+    return 1
 
 def execute_nucleos_vector_tile_query(sql: str, params: tuple[object, ...]) -> bytes:
     with get_db_pool().connection() as conn:

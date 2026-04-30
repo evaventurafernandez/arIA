@@ -57,7 +57,7 @@ Recomendación inicial: opción A o B. El TFG trabaja con varias fuentes heterog
   - NASA FIRMS: filtros por `confidence`, recorte por límite nacional, gestión de falsos positivos y elección de VIIRS frente a MODIS.
   - EFFIS/Copernicus: vectorización por píxel desde teselas WMTS y limitaciones de la pérdida de atributos respecto a un servicio vectorial nativo.
   - CORINE: filtrado por `CODE_18`, simplificación, disolución por clase y reproyección.
-  - Núcleos IGN: filtro por habitantes, simplificación de geometrías y umbrales por escala/zoom.
+  - Núcleos IGN: filtro por habitantes positivos, descartando registros sin dato o con `0` habitantes porque en escenarios de emergencia su riesgo poblacional se considera nulo; simplificación de geometrías y umbrales por escala/zoom.
 - Análisis exploratorio mínimo: distribuciones de FRP, conteos por nivel de aviso y por fenómeno, comparativa visual FIRMS vs EFFIS, cobertura temporal del histórico, etc.
 - Buenas prácticas adoptadas: trazabilidad de fuentes, registro de fecha de descarga, separación entre datos brutos, intermedios y publicados (esquema `source` / `core` / `pub` que ya usa el proyecto en PostgreSQL).
 

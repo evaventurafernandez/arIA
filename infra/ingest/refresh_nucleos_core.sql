@@ -59,8 +59,6 @@ classified AS (
     SELECT
         *,
         CASE
-            WHEN habitantes IS NULL THEN 'sin_dato'
-            WHEN habitantes = 0 THEN 'sin_poblacion'
             WHEN habitantes < 100 THEN 'menor_100'
             WHEN habitantes < 500 THEN '100_499'
             WHEN habitantes < 5000 THEN '500_4999'
@@ -68,13 +66,11 @@ classified AS (
             ELSE '50000_mas'
         END AS population_class,
         CASE
-            WHEN habitantes IS NULL THEN 0
-            WHEN habitantes = 0 THEN 1
-            WHEN habitantes < 100 THEN 2
-            WHEN habitantes < 500 THEN 3
-            WHEN habitantes < 5000 THEN 4
-            WHEN habitantes < 50000 THEN 5
-            ELSE 6
+            WHEN habitantes < 100 THEN 1
+            WHEN habitantes < 500 THEN 2
+            WHEN habitantes < 5000 THEN 3
+            WHEN habitantes < 50000 THEN 4
+            ELSE 5
         END AS population_rank,
         CASE
             WHEN tipo_code IS NULL THEN 'Sin tipo'
@@ -82,6 +78,7 @@ classified AS (
         END AS tipo_label
     FROM normalized
     WHERE NOT ST_IsEmpty(geom)
+      AND habitantes > 0
 )
 SELECT
     dataset_id,

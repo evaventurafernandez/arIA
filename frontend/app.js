@@ -1,7 +1,53 @@
 // Mapa base
-const map = L.map('map', { zoomControl: false }).setView([40.0, -3.7], 6);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  attribution: '© OpenStreetMap © CARTO', maxZoom: 18
+const IGN_ATTRIBUTION = '© Instituto Geográfico Nacional / CNIG';
+
+const map = L.map('map', {
+  zoomControl: false,
+  maxZoom: 20,
+}).setView([40.0, -3.7], 6);
+
+const baseIGNSimplificado = L.tileLayer(
+  'https://tms-ign-base.idee.es/1.0.0/IGNBaseSimplificado/{z}/{x}/{-y}.png',
+  {
+    attribution: IGN_ATTRIBUTION,
+    maxZoom: 20,
+  }
+);
+
+const baseIGNTodo = L.tileLayer(
+  'https://tms-ign-base.idee.es/1.0.0/IGNBaseTodo/{z}/{x}/{-y}.jpeg',
+  {
+    attribution: IGN_ATTRIBUTION,
+    maxZoom: 20,
+  }
+);
+
+const basePNOA = L.tileLayer(
+  'https://tms-pnoa-ma.idee.es/1.0.0/pnoa-ma/{z}/{x}/{-y}.jpeg',
+  {
+    attribution: IGN_ATTRIBUTION,
+    maxNativeZoom: 19,
+    maxZoom: 20,
+  }
+);
+
+baseIGNTodo.addTo(map);
+
+const baseLayers = {
+  'IGN Base completo': baseIGNTodo,
+  'IGN Base simplificado': baseIGNSimplificado,
+  'Ortofoto PNOA': basePNOA,
+};
+
+const thematicLayers = {
+  // Futuras capas temáticas Leaflet:
+  // 'Municipios': municipiosLayer,
+  // 'Avisos meteorológicos': avisosLayer,
+};
+
+L.control.layers(baseLayers, thematicLayers, {
+  collapsed: true,
+  position: 'topleft',
 }).addTo(map);
 
 L.control.zoom({ position: 'topright' }).addTo(map);
@@ -722,8 +768,6 @@ const CORINE_LEGEND = {
 };
 
 const NUCLEOS_POPULATION_CLASSES = [
-  { code: 'sin_dato', color: '#8a93a5', label: 'Sin dato' },
-  { code: 'sin_poblacion', color: '#6b7280', label: '0 hab.' },
   { code: 'menor_100', color: '#7fc97f', label: '< 100' },
   { code: '100_499', color: '#4db6ac', label: '100-499' },
   { code: '500_4999', color: '#3f88c5', label: '500-4.999' },
@@ -734,15 +778,16 @@ const NUCLEOS_POPULATION_CLASSES = [
 const NUCLEOS_POPULATION_INDEX = Object.fromEntries(
   NUCLEOS_POPULATION_CLASSES.map(item => [item.code, item])
 );
+const NUCLEOS_POPULATION_FALLBACK = { color: '#7fc97f', label: 'Población registrada' };
 
 const NUCLEOS_LEGEND = {
   title: 'Núcleos de población',
   items: NUCLEOS_POPULATION_CLASSES.map(item => ({ color: item.color, label: item.label })),
-  note: `BTN IGN - polígonos visibles desde zoom ${NUCLEOS_MIN_ZOOM}`
+  note: `BTN IGN - habitantes > 0 - polígonos visibles desde zoom ${NUCLEOS_MIN_ZOOM}`
 };
 
 function getNucleosPopulationInfo(properties) {
-  return NUCLEOS_POPULATION_INDEX[properties.population_class] || NUCLEOS_POPULATION_INDEX.sin_dato;
+  return NUCLEOS_POPULATION_INDEX[properties.population_class] || NUCLEOS_POPULATION_FALLBACK;
 }
 
 function formatNucleosHabitantes(value) {
