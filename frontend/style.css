@@ -280,7 +280,57 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
 }
 .layer-row:has(input:checked) { border-color: #4a90d9; background: #1e2235; color: #fff; }
 .layer-row input { display: none; }
+.layer-row-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+.burnt-area-layer-control { margin-bottom: 4px; }
+.burnt-area-layer-control .layer-row { margin-bottom: 4px; }
+.burnt-area-mode-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 4px 16px;
+  padding: 3px;
+  border-radius: 7px;
+  border: 1px solid #2a2d3a;
+  background: #0f1117;
+}
+.burnt-area-mode-option {
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #8f99ab;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+.burnt-area-mode-option:hover {
+  color: #e8edf7;
+  border-color: rgba(255, 135, 86, 0.22);
+}
+.burnt-area-mode-option.active {
+  color: #fff2e8;
+  border-color: rgba(255, 135, 86, 0.38);
+  background: rgba(255, 107, 61, 0.14);
+}
+.burnt-area-mode-option:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 135, 86, 0.18);
+}
 
 /* Filtros */
 .filter-block { margin-bottom: 8px; }

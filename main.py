@@ -591,6 +591,8 @@ def build_burnt_area_layer_metadata() -> dict:
         "timeline_url": "/api/burnt-area/timeline",
         "stats_url": "/api/burnt-area/stats/daily",
         "tile_url_template": "/api/burnt-area/tiles/{version}/{date}/{z}/{x}/{y}.png",
+        "tile_modes": ["daily", "cumulative"],
+        "tile_mode_parameter": "mode",
         "publication_mode": "local_png_tiles",
         "tile_min_zoom": BURNT_AREA_TILE_MIN_ZOOM,
         "tile_max_zoom": BURNT_AREA_TILE_MAX_ZOOM,
@@ -610,6 +612,47 @@ def build_burnt_area_timeline_payload(
         row["nominal_date"]: row
         for row in query_burnt_area_stats_rows(dataset_version, delivery_format, date_from, date_to)
     }
+    dates = []
+    cumulative_burned_area_ha = 0.0
+    cumulative_burned_pixel_count = 0
+    cumulative_has_area = False
+    cumulative_has_pixels = False
+    cumulative_tile_date_count = 0
+
+    for item in items:
+        stats = stats_index.get(item["nominal_date"], {})
+        burned_area_ha = stats.get("burned_area_ha")
+        burned_pixel_count = stats.get("burned_pixel_count")
+        if burned_area_ha is not None:
+            cumulative_burned_area_ha += float(burned_area_ha)
+            cumulative_has_area = True
+        if burned_pixel_count is not None:
+            cumulative_burned_pixel_count += int(burned_pixel_count)
+            cumulative_has_pixels = True
+        if item.get("has_local_tiles"):
+            cumulative_tile_date_count += 1
+
+        dates.append(
+            {
+                "date": item["nominal_date"],
+                "publication_status": item.get("publication_status", "cataloged"),
+                "has_local_file": bool(item.get("has_local_file", False)),
+                "has_local_spain_cog": bool(item.get("has_local_spain_cog", False)),
+                "has_local_tiles": bool(item.get("has_local_tiles", False)),
+                "has_cumulative_tiles": cumulative_tile_date_count > 0,
+                "cumulative_tile_date_count": cumulative_tile_date_count,
+                "burned_area_ha": burned_area_ha,
+                "burned_pixel_count": burned_pixel_count,
+                "cumulative_burned_area_ha": (
+                    cumulative_burned_area_ha if cumulative_has_area else None
+                ),
+                "cumulative_burned_pixel_count": (
+                    cumulative_burned_pixel_count if cumulative_has_pixels else None
+                ),
+                "stats_generated_at": stats.get("stats_generated_at"),
+            }
+        )
+
     return {
         "layer_id": BURNT_AREA_LAYER_ID,
         "dataset_version": dataset_version,
@@ -617,19 +660,7 @@ def build_burnt_area_timeline_payload(
         "date_from": date_from,
         "date_to": date_to,
         "date_count": len(items),
-        "dates": [
-            {
-                "date": item["nominal_date"],
-                "publication_status": item.get("publication_status", "cataloged"),
-                "has_local_file": bool(item.get("has_local_file", False)),
-                "has_local_spain_cog": bool(item.get("has_local_spain_cog", False)),
-                "has_local_tiles": bool(item.get("has_local_tiles", False)),
-                "burned_area_ha": stats_index.get(item["nominal_date"], {}).get("burned_area_ha"),
-                "burned_pixel_count": stats_index.get(item["nominal_date"], {}).get("burned_pixel_count"),
-                "stats_generated_at": stats_index.get(item["nominal_date"], {}).get("stats_generated_at"),
-            }
-            for item in items
-        ],
+        "dates": dates,
     }
 
 
@@ -1328,6 +1359,53 @@ def resolve_burnt_area_tile_path(dataset_version: str, nominal_date: str, z: int
     return Path(settings.burnt_area_tiles_root) / dataset_version / nominal_date / str(z) / str(x) / f"{y}.png"
 
 
+@lru_cache(maxsize=32)
+def list_burnt_area_tile_dates(tiles_root: str, dataset_version: str) -> tuple[str, ...]:
+    root_path = Path(tiles_root) / dataset_version
+    if not root_path.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            path.name
+            for path in root_path.iterdir()
+            if path.is_dir() and len(path.name) == 10
+        )
+    )
+
+
+@lru_cache(maxsize=8192)
+def build_burnt_area_cumulative_tile_png_cached(
+    tiles_root: str,
+    dataset_version: str,
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+) -> tuple[bytes, bool]:
+    canvas: Image.Image | None = None
+
+    for date_string in list_burnt_area_tile_dates(tiles_root, dataset_version):
+        if date_string > nominal_date:
+            break
+        tile_path = Path(tiles_root) / dataset_version / date_string / str(z) / str(x) / f"{y}.png"
+        if not tile_path.is_file():
+            continue
+        with Image.open(tile_path) as tile_image:
+            rgba = tile_image.convert("RGBA")
+            if canvas is None:
+                canvas = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+            if rgba.size != canvas.size:
+                rgba = rgba.resize(canvas.size)
+            canvas.alpha_composite(rgba)
+
+    if canvas is None:
+        return BURNT_AREA_TRANSPARENT_PNG, False
+
+    output = io.BytesIO()
+    canvas.save(output, format="PNG", optimize=True)
+    return output.getvalue(), True
+
+
 def resolve_burnt_area_tiles_zoom_dir(dataset_version: str, nominal_date: str, source_zoom: int) -> Path:
     return Path(settings.burnt_area_tiles_root) / dataset_version / nominal_date / str(source_zoom)
 
@@ -1454,6 +1532,65 @@ def build_burnt_area_locator_geojson_cached(
             "dataset_version": dataset_version,
             "nominal_date": nominal_date,
             "source_zoom": source_zoom,
+            "tile_feature_count": len(features),
+            "pixel_count": total_pixels,
+            "run_count": total_runs,
+        },
+        "features": features,
+    }
+
+
+@lru_cache(maxsize=64)
+def build_burnt_area_cumulative_locator_geojson_cached(
+    tiles_root: str,
+    dataset_version: str,
+    nominal_date: str,
+    source_zoom: int,
+) -> dict:
+    features = []
+    total_pixels = 0
+    total_runs = 0
+    included_dates = []
+
+    for date_string in list_burnt_area_tile_dates(tiles_root, dataset_version):
+        if date_string > nominal_date:
+            break
+
+        daily_data = build_burnt_area_locator_geojson_cached(
+            tiles_root,
+            dataset_version,
+            date_string,
+            source_zoom,
+        )
+        daily_features = daily_data.get("features", [])
+        if not daily_features:
+            continue
+
+        included_dates.append(date_string)
+        metadata = daily_data.get("metadata", {})
+        total_pixels += int(metadata.get("pixel_count") or 0)
+        total_runs += int(metadata.get("run_count") or 0)
+        for feature in daily_features:
+            features.append(
+                {
+                    **feature,
+                    "properties": {
+                        **feature.get("properties", {}),
+                        "mode": "cumulative",
+                        "cumulative_date": nominal_date,
+                    },
+                }
+            )
+
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "dataset_version": dataset_version,
+            "nominal_date": nominal_date,
+            "source_zoom": source_zoom,
+            "mode": "cumulative",
+            "included_date_count": len(included_dates),
+            "included_dates": included_dates,
             "tile_feature_count": len(features),
             "pixel_count": total_pixels,
             "run_count": total_runs,
@@ -3187,26 +3324,59 @@ def get_burnt_area_daily_stats(
     return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/burnt-area/tiles/{dataset_version}/{nominal_date}/{z:int}/{x:int}/{y:int}.png")
-def get_burnt_area_tile(dataset_version: str, nominal_date: str, z: int, x: int, y: int):
-    """Tesela PNG local de burnt area para una fecha concreta.
+def get_burnt_area_tile(
+    dataset_version: str,
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+    mode: str = Query("daily"),
+):
+    """Tesela PNG local de burnt area para una fecha concreta o acumulada.
 
     Mientras no existan teselas locales generadas, responde PNG transparente
     para que el cliente pueda inicializar la capa temporal sin romper el visor.
     """
     validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
     normalized_date = validate_burnt_area_date_string(nominal_date)
+    if mode not in {"daily", "cumulative"}:
+        raise HTTPException(status_code=400, detail="mode debe ser daily o cumulative")
     if z < 0 or x < 0 or y < 0:
         raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
 
+    if mode == "cumulative":
+        tile, has_content = build_burnt_area_cumulative_tile_png_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            z,
+            x,
+            y,
+        )
+        return Response(
+            content=tile,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=86400" if has_content else "no-store",
+                "X-Burnt-Area-Mode": "cumulative",
+                "X-Burnt-Area-Status": "ok" if has_content else "missing-cumulative-tile",
+            },
+        )
+
     tile_path = resolve_burnt_area_tile_path(dataset_version, normalized_date, z, x, y)
     if tile_path.is_file():
-        return FileResponse(tile_path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return FileResponse(
+            tile_path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400", "X-Burnt-Area-Mode": "daily"},
+        )
 
     return Response(
         content=BURNT_AREA_TRANSPARENT_PNG,
         media_type="image/png",
         headers={
             "Cache-Control": "no-store",
+            "X-Burnt-Area-Mode": "daily",
             "X-Burnt-Area-Status": "missing-local-tile",
         },
     )
@@ -3217,17 +3387,28 @@ def get_burnt_area_locator(
     dataset_version: str,
     nominal_date: str,
     source_zoom: int = Query(10),
+    mode: str = Query("daily"),
 ):
-    """Vector localizador aproximado derivado de las PNG no vacias para destacar el raster."""
+    """Vector localizador aproximado derivado de las PNG no vacias para destacar areas quemadas."""
     validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
     normalized_date = validate_burnt_area_date_string(nominal_date)
     normalized_zoom = validate_burnt_area_zoom_level(source_zoom)
-    data = build_burnt_area_locator_geojson_cached(
-        settings.burnt_area_tiles_root,
-        dataset_version,
-        normalized_date,
-        normalized_zoom,
-    )
+    if mode not in {"daily", "cumulative"}:
+        raise HTTPException(status_code=400, detail="mode debe ser daily o cumulative")
+    if mode == "cumulative":
+        data = build_burnt_area_cumulative_locator_geojson_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            normalized_zoom,
+        )
+    else:
+        data = build_burnt_area_locator_geojson_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            normalized_zoom,
+        )
     return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
 
 @app.get("/api/layers/aemet-max-temperature")

@@ -125,11 +125,17 @@
         Focos incendio Copernicus (EFFIS)
         <input type="checkbox" id="chk-effis_fires"/>
       </label>
-      <label class="layer-row">
-        <span class="dot" style="background:#ff6b3d"></span>
-        Áreas quemadas diarias Copernicus
-        <input type="checkbox" id="chk-burnt_area_daily"/>
-      </label>
+      <div class="burnt-area-layer-control">
+        <label class="layer-row">
+          <span class="dot" style="background:#ff6b3d"></span>
+          <span class="layer-row-label" title="Áreas quemadas Copernicus">Áreas quemadas Copernicus</span>
+          <input type="checkbox" id="chk-burnt_area_daily"/>
+        </label>
+        <div id="burnt-area-mode-control" class="burnt-area-mode-control" role="group" aria-label="Representación temporal de áreas quemadas">
+          <button id="burnt-area-mode-daily" class="burnt-area-mode-option active" type="button" data-burnt-area-mode="daily" aria-pressed="true">Diario</button>
+          <button id="burnt-area-mode-cumulative" class="burnt-area-mode-option" type="button" data-burnt-area-mode="cumulative" aria-pressed="false">Acumulado</button>
+        </div>
+      </div>
       <label class="layer-row">
         <span class="dot" style="background:#3f88c5"></span>
         Núcleos de población (IGN)

@@ -169,6 +169,12 @@ const BURNT_AREA_DEFAULT_DATE_FROM = '2025-05-01';
 const BURNT_AREA_DEFAULT_DATE_TO = '2025-08-31';
 const BURNT_AREA_MAX_NATIVE_ZOOM = 10;
 const BURNT_AREA_LOCATOR_SOURCE_ZOOM = 10;
+const BURNT_AREA_DISPLAY_MODE_DAILY = 'daily';
+const BURNT_AREA_DISPLAY_MODE_CUMULATIVE = 'cumulative';
+const BURNT_AREA_DISPLAY_MODES = new Set([
+  BURNT_AREA_DISPLAY_MODE_DAILY,
+  BURNT_AREA_DISPLAY_MODE_CUMULATIVE,
+]);
 const FIRMS_HISTORY_TIMELINE_URL = '/api/firms/history/timeline';
 const FIRMS_HISTORY_FEATURES_URL = '/api/firms/history/features';
 const FIRMS_HISTORY_DEFAULT_DATE_FROM = '2025-05-01';
@@ -240,6 +246,7 @@ let burntAreaLocatorCache = new Map();
 let burntAreaLocatorCachePromise = null;
 let burntAreaLocatorKey = null;
 let burntAreaVisible = false;
+let burntAreaDisplayMode = BURNT_AREA_DISPLAY_MODE_DAILY;
 let burntAreaMetadata = null;
 let burntAreaTimeline = [];
 let burntAreaTimelineByDate = new Map();
@@ -1425,11 +1432,15 @@ function buildBurntAreaTimelineUrl() {
 }
 
 function buildBurntAreaTileUrl(dateString) {
-  return `/api/burnt-area/tiles/${BURNT_AREA_DEFAULT_VERSION}/${dateString}/{z}/{x}/{y}.png`;
+  const params = new URLSearchParams({ mode: burntAreaDisplayMode });
+  return `/api/burnt-area/tiles/${BURNT_AREA_DEFAULT_VERSION}/${dateString}/{z}/{x}/{y}.png?${params.toString()}`;
 }
 
 function buildBurntAreaLocatorUrl(dateString, sourceZoom) {
-  const params = new URLSearchParams({ source_zoom: String(sourceZoom) });
+  const params = new URLSearchParams({
+    source_zoom: String(sourceZoom),
+    mode: burntAreaDisplayMode,
+  });
   return `/api/burnt-area/locator/${BURNT_AREA_DEFAULT_VERSION}/${dateString}?${params.toString()}`;
 }
 
@@ -1449,6 +1460,91 @@ function formatBurntAreaSurface(areaHa) {
   if (!Number.isFinite(value)) return null;
   const maxDigits = value >= 1000 ? 0 : value >= 100 ? 1 : 2;
   return `${new Intl.NumberFormat('es-ES', { maximumFractionDigits: maxDigits }).format(value)} ha`;
+}
+
+function isBurntAreaCumulativeMode() {
+  return burntAreaDisplayMode === BURNT_AREA_DISPLAY_MODE_CUMULATIVE;
+}
+
+function getBurntAreaTimelineItemsThroughDate(dateString) {
+  if (!dateString) return [];
+  return burntAreaTimeline.filter(item => item?.date && item.date <= dateString);
+}
+
+function getBurntAreaCumulativeStats(dateString) {
+  const items = getBurntAreaTimelineItemsThroughDate(dateString);
+  if (!items.length) {
+    return { hasStats: false, hasTiles: false, areaHa: null, pixelCount: null, tileDateCount: 0 };
+  }
+
+  const lastItem = items[items.length - 1];
+  const backendArea = Number(lastItem.cumulative_burned_area_ha);
+  const backendPixels = Number(lastItem.cumulative_burned_pixel_count);
+  if (Number.isFinite(backendArea)) {
+    return {
+      hasStats: true,
+      hasTiles: items.some(item => item.has_local_tiles || item.has_cumulative_tiles),
+      areaHa: backendArea,
+      pixelCount: Number.isFinite(backendPixels) ? backendPixels : null,
+      tileDateCount: Number(lastItem.cumulative_tile_date_count) || items.filter(item => item.has_local_tiles).length,
+    };
+  }
+
+  let areaHa = 0;
+  let pixelCount = 0;
+  let hasStats = false;
+  let hasPixels = false;
+  let tileDateCount = 0;
+  items.forEach(item => {
+    const dailyArea = Number(item.burned_area_ha);
+    const dailyPixels = Number(item.burned_pixel_count);
+    if (Number.isFinite(dailyArea)) {
+      areaHa += dailyArea;
+      hasStats = true;
+    }
+    if (Number.isFinite(dailyPixels)) {
+      pixelCount += dailyPixels;
+      hasPixels = true;
+    }
+    if (item.has_local_tiles) tileDateCount += 1;
+  });
+
+  return {
+    hasStats,
+    hasTiles: tileDateCount > 0,
+    areaHa: hasStats ? areaHa : null,
+    pixelCount: hasPixels ? pixelCount : null,
+    tileDateCount,
+  };
+}
+
+function updateBurntAreaModeControl() {
+  document.querySelectorAll('[data-burnt-area-mode]').forEach(button => {
+    const selected = button.dataset.burntAreaMode === burntAreaDisplayMode;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  });
+
+  const control = document.getElementById('burnt-area-mode-control');
+  if (!control) return;
+  control.title = isBurntAreaCumulativeMode()
+    ? 'Mostrando áreas quemadas acumuladas hasta la fecha seleccionada'
+    : 'Mostrando áreas quemadas del día seleccionado';
+}
+
+function setBurntAreaDisplayMode(mode) {
+  if (!BURNT_AREA_DISPLAY_MODES.has(mode) || mode === burntAreaDisplayMode) {
+    updateBurntAreaModeControl();
+    return;
+  }
+
+  burntAreaDisplayMode = mode;
+  burntAreaLocatorKey = null;
+  updateBurntAreaModeControl();
+  updateHistoricalTimelineUI();
+  if (burntAreaVisible) {
+    renderBurntAreaForDate(getHistoricalTimelineCurrentDate(), true);
+  }
 }
 
 function resolveBurntAreaLocatorSourceZoom() {
@@ -2489,7 +2585,7 @@ function setHistoricalSummaryState(elementId, { hidden = false, state = 'nodata'
   el.textContent = text;
 }
 
-function updateHistoricalBurntAreaSummaryUI(item) {
+function updateHistoricalBurntAreaSummaryUI(dateString) {
   if (!burntAreaVisible) {
     setHistoricalSummaryState('ht-ba-summary', { hidden: true });
     return;
@@ -2498,6 +2594,27 @@ function updateHistoricalBurntAreaSummaryUI(item) {
     setHistoricalSummaryState('ht-ba-summary', { state: 'error', text: 'BA error' });
     return;
   }
+
+  if (isBurntAreaCumulativeMode()) {
+    const cumulative = getBurntAreaCumulativeStats(dateString);
+    if (!cumulative.hasStats) {
+      setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA acum. s/d' });
+      return;
+    }
+    const formattedSurface = formatBurntAreaSurface(cumulative.areaHa);
+    if (formattedSurface === null) {
+      setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA acum. s/d' });
+      return;
+    }
+    if (Number(cumulative.areaHa) <= 0) {
+      setHistoricalSummaryState('ht-ba-summary', { state: 'zero', text: 'BA acum. 0 ha' });
+      return;
+    }
+    setHistoricalSummaryState('ht-ba-summary', { state: 'active', text: `BA acum. ${formattedSurface}` });
+    return;
+  }
+
+  const item = dateString ? (burntAreaTimelineByDate.get(dateString) || null) : null;
   if (!item) {
     setHistoricalSummaryState('ht-ba-summary', { state: 'nodata', text: 'BA s/d' });
     return;
@@ -2655,10 +2772,11 @@ function updateHistoricalTimelineUI() {
   if (!panel || !slider || !dateEl || !rangeStartEl || !rangeEndEl || !playBtn || !resetBtn) return;
 
   syncTimelinePanelsVisibility();
+  updateBurntAreaModeControl();
   playBtn.classList.toggle('playing', Boolean(historicalTimelinePlayInterval));
   playBtn.innerHTML = historicalTimelinePlayInterval ? '&#9646;&#9646; Pausa' : '&#9654; Play';
 
-  updateHistoricalBurntAreaSummaryUI(getBurntAreaCurrentTimelineItem());
+  updateHistoricalBurntAreaSummaryUI(getHistoricalTimelineCurrentDate());
   updateHistoricalFiresSummaryUI(getHistoricalFiresCurrentTimelineItem());
   updateHistoricalAemetMaxTempSummaryUI(getAemetMaxTempCurrentTimelineItem());
   refreshHistoricalTimelineNote();
@@ -2710,13 +2828,20 @@ async function syncBurntAreaLocatorForDate(dateString, forceReload = false) {
   }
 
   const currentItem = burntAreaTimelineByDate.get(dateString);
-  if (!currentItem || !currentItem.has_local_tiles) {
+  const cumulative = isBurntAreaCumulativeMode();
+  if (!cumulative && (!currentItem || !currentItem.has_local_tiles)) {
+    clearBurntAreaLocatorLayer();
+    return;
+  }
+  if (cumulative && !getBurntAreaCumulativeStats(dateString).hasTiles) {
     clearBurntAreaLocatorLayer();
     return;
   }
 
   const sourceZoom = resolveBurntAreaLocatorSourceZoom();
-  const cacheKey = `${currentItem.date}:${sourceZoom}`;
+  const requestDate = cumulative ? dateString : currentItem.date;
+  const requestMode = burntAreaDisplayMode;
+  const cacheKey = `${requestMode}:${requestDate}:${sourceZoom}`;
   const layer = ensureBurntAreaLocatorLayer();
   refreshBurntAreaLocatorStyle();
 
@@ -2731,10 +2856,11 @@ async function syncBurntAreaLocatorForDate(dateString, forceReload = false) {
   }
 
   const requestKey = cacheKey;
-  const locatorPromise = fetchJson(buildBurntAreaLocatorUrl(currentItem.date, sourceZoom))
+  const locatorPromise = fetchJson(buildBurntAreaLocatorUrl(requestDate, sourceZoom))
     .then(data => {
       burntAreaLocatorCache.set(requestKey, data);
-      if (!burntAreaVisible || getHistoricalTimelineCurrentDate() !== currentItem.date) return;
+      if (!burntAreaVisible || getHistoricalTimelineCurrentDate() !== requestDate) return;
+      if (burntAreaDisplayMode !== requestMode) return;
       if (resolveBurntAreaLocatorSourceZoom() !== sourceZoom) return;
       burntAreaLocatorKey = requestKey;
       layer.clearLayers();
@@ -2763,6 +2889,18 @@ function renderBurntAreaForDate(dateString, forceReload = false) {
   if (!burntAreaVisible || !dateString) {
     clearBurntAreaRasterLayer();
     clearBurntAreaLocatorLayer();
+    return;
+  }
+
+  if (isBurntAreaCumulativeMode()) {
+    const hasKnownDate = burntAreaTimeline.some(item => item?.date && item.date <= dateString);
+    if (!hasKnownDate) {
+      clearBurntAreaRasterLayer();
+      clearBurntAreaLocatorLayer();
+      return;
+    }
+    clearBurntAreaRasterLayer();
+    void syncBurntAreaLocatorForDate(dateString, forceReload);
     return;
   }
 
@@ -3668,6 +3806,14 @@ if (chkBurntArea) {
     void toggleBurntAreaLayer(e.target.checked);
   });
 }
+
+document.querySelectorAll('[data-burnt-area-mode]').forEach(button => {
+  button.addEventListener('click', event => {
+    event.preventDefault();
+    setBurntAreaDisplayMode(event.currentTarget.dataset.burntAreaMode);
+  });
+});
+updateBurntAreaModeControl();
 
 const chkNucleos = document.getElementById('chk-nucleos_poblacion');
 if (chkNucleos) {
