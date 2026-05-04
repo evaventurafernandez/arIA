@@ -9,6 +9,8 @@ import sys
 import psycopg
 from dotenv import dotenv_values
 
+from daily_window import resolve_date_range
+
 
 DATASET_ID = "aemet_max_temperature_warning_historical"
 COVERAGE_EXPECTED_UNIT_COUNT = 1
@@ -41,8 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Publica la serie diaria de avisos AEMET de temperaturas máximas para el visor."
     )
-    parser.add_argument("--date-from", default="2025-05-01")
-    parser.add_argument("--date-to", default="2025-08-31")
+    parser.add_argument("--date-from", default=None, help="Primer día que se publicará. Si se omite junto a --date-to, se procesa ayer.")
+    parser.add_argument("--date-to", default=None, help="Último día que se publicará. Si se omite junto a --date-from, se procesa ayer.")
     return parser.parse_args()
 
 
@@ -204,17 +206,21 @@ def query_summary(conn: psycopg.Connection, date_from: str, date_to: str) -> dic
 
 def main() -> int:
     args = parse_args()
+    date_from, date_to, automatic_daily_window = resolve_date_range(args.date_from, args.date_to)
+    date_from_text = date_from.isoformat()
+    date_to_text = date_to.isoformat()
     merged_env = load_env()
     conninfo = pg_conninfo(merged_env)
 
+    window_label = "ventana diaria automática" if automatic_daily_window else "rango explícito"
     print(
         "Publicando avisos AEMET de temperaturas máximas "
-        f"({args.date_from} a {args.date_to})"
+        f"({date_from_text} a {date_to_text}, {window_label})"
     )
     with psycopg.connect(conninfo) as conn:
-        delete_country_stats(conn, args.date_from, args.date_to)
-        upsert_country_stats(conn, args.date_from, args.date_to)
-        summary = query_summary(conn, args.date_from, args.date_to)
+        delete_country_stats(conn, date_from_text, date_to_text)
+        upsert_country_stats(conn, date_from_text, date_to_text)
+        summary = query_summary(conn, date_from_text, date_to_text)
         conn.commit()
 
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))

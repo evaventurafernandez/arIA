@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 from dotenv import dotenv_values
 
+from daily_window import resolve_date_range
+
 
 AEMET_API_BASE = "https://opendata.aemet.es/opendata/api"
 AEMET_ARCHIVE_PATH = "/avisos_cap/archivo/fechaini/{date_from}/fechafin/{date_to}"
@@ -49,10 +51,6 @@ def load_env() -> dict[str, str]:
     env = {key: value for key, value in dotenv_values(".env").items() if value is not None}
     env.update({key: value for key, value in os.environ.items() if value})
     return env
-
-
-def parse_date(value: str) -> date:
-    return date.fromisoformat(value)
 
 
 def format_aemet_utc(value: datetime) -> str:
@@ -102,8 +100,16 @@ def parse_args() -> argparse.Namespace:
             "La descarga se guarda bruta para poder reimportar y auditar."
         )
     )
-    parser.add_argument("--date-from", default="2025-05-01", help="Primer día válido que se publicará.")
-    parser.add_argument("--date-to", default="2025-08-31", help="Último día válido que se publicará.")
+    parser.add_argument(
+        "--date-from",
+        default=None,
+        help="Primer día válido que se publicará. Si se omite junto a --date-to, se procesa ayer.",
+    )
+    parser.add_argument(
+        "--date-to",
+        default=None,
+        help="Último día válido que se publicará. Si se omite junto a --date-from, se procesa ayer.",
+    )
     parser.add_argument(
         "--elaboration-lookback-days",
         type=int,
@@ -250,8 +256,7 @@ def main() -> int:
     if not api_key:
         raise RuntimeError("Falta AEMET_API_KEY en .env o en el entorno.")
 
-    valid_date_from = parse_date(args.date_from)
-    valid_date_to = parse_date(args.date_to)
+    valid_date_from, valid_date_to, automatic_daily_window = resolve_date_range(args.date_from, args.date_to)
     output_root = Path(args.output_root)
     plans = build_download_plans(
         valid_date_from=valid_date_from,
@@ -265,10 +270,11 @@ def main() -> int:
     failures = 0
     total_bytes = 0
 
+    window_label = "ventana diaria automática" if automatic_daily_window else "rango explícito"
     print(
         f"Descargando {len(plans)} bloques AEMET CAP "
         f"(válido {valid_date_from.isoformat()} a {valid_date_to.isoformat()}, "
-        f"lookback={args.elaboration_lookback_days}, block_days={args.block_days})"
+        f"{window_label}, lookback={args.elaboration_lookback_days}, block_days={args.block_days})"
     )
     for index, plan in enumerate(plans, start=1):
         label = f"{plan.request_date_from.isoformat()}..{plan.request_date_to.isoformat()}"

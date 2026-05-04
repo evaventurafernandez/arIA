@@ -49,6 +49,8 @@ La decisión de filtrado principal se aplica durante la importación: solo se ac
 11. El script `infra/ingest/publish_aemet_warnings.py` genera `pub.aemet_max_temperature_daily_stat`, una serie diaria país con cobertura, recuentos por nivel, número de zonas avisadas y temperatura máxima publicada.
 12. `main.py` expone la capa mediante metadata, timeline, estadísticas diarias, GeoJSON por fecha y teselas MVT.
 13. El frontend añade la capa "Histórico AEMET calor", la integra en la timeline histórica compartida y renderiza la geometría con `Leaflet.VectorGrid`, usando por defecto `warnings_only=true`.
+14. Para la ejecución incremental diaria, si no se indican explícitamente `--date-from` ni `--date-to`, el proceso tomará por defecto el día anterior a la ejecución en ambos parámetros. Así se descarga, importa, refresca y publica un único día civil ya cerrado.
+15. Se incluirá una tarea programada para mantener el histórico diario: todos los días a las `01:00` se ejecutará el flujo incremental completo, usando por defecto la fecha de ayer como `--date-from` y `--date-to`.
 
 ## Comandos de reproducción
 El flujo operativo documentado para el periodo del TFG es:
@@ -64,6 +66,18 @@ docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/inges
 docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_pub.sql
 venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py --date-from 2025-05-01 --date-to 2025-08-31
 ```
+
+Para la operación diaria programada no se pasan fechas manualmente: los scripts deben resolver internamente `--date-from` y `--date-to` al día anterior a la ejecución.
+
+```bash
+venv\Scripts\python.exe infra/ingest/download_aemet_warnings_historical_sources.py --elaboration-lookback-days 3 --block-days 1 --sleep-seconds 3 --max-retries 8
+venv\Scripts\python.exe infra/ingest/import_aemet_warnings_source.py --elaboration-lookback-days 3
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_pub.sql
+venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py
+```
+
+Esta ejecución incremental quedará automatizada mediante una tarea programada diaria a las `01:00`, de forma que cada madrugada se incorpore al histórico el día inmediatamente anterior.
 
 ## Problemas encontrados y cómo se resolvieron
 - El endpoint histórico de AEMET trabaja por rango de elaboración, no directamente por día de validez del aviso. La solución fue descargar desde varios días antes del inicio del periodo con `--elaboration-lookback-days`, de forma que no se pierdan avisos emitidos antes del primer día pero activos durante él.
@@ -126,6 +140,9 @@ venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py --date-from 2025-
 - `source` conserva registros CAP ya filtrados por temperaturas máximas.
 - `core` deduplica y normaliza a `core.aemet_max_temperature_warning`.
 - `pub` genera una capa diaria y una tabla de estadísticas país.
+- Los parámetros reales de rango temporal del proceso son `--date-from` y `--date-to`.
+- Si la ejecución incremental no recibe `--date-from` ni `--date-to`, ambos toman por defecto la fecha de ayer.
+- El histórico diario se mantendrá mediante una tarea programada que se ejecutará todos los días a las `01:00`.
 - El visor consume por defecto solo niveles adversos mediante `warnings_only=true`.
 - Los niveles adversos publicados son `Amarillo`, `Naranja` y `Rojo`; `Verde` se conserva como trazabilidad.
 

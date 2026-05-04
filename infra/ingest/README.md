@@ -67,6 +67,32 @@ La descarga usa el endpoint oficial de archivo CAP por rango de elaboración, gu
    venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py --date-from 2025-05-01 --date-to 2025-08-31
    ```
 
+### Automatización diaria AEMET
+
+Para el flujo incremental diario, los scripts AEMET procesan el día anterior en la zona horaria `Europe/Madrid` cuando no se indican `--date-from` ni `--date-to`.
+
+El alta de tareas en Windows se hace con:
+
+```powershell
+.\infra\ingest\register_aemet_daily_tasks.ps1
+```
+
+El script crea la carpeta de primer nivel `\TFG\` en el Programador de tareas y registra un paso diario por tarea:
+
+- `AEMET calor 01 descarga CAP`
+- `AEMET calor 02 importacion source`
+- `AEMET calor 03 refresh core`
+- `AEMET calor 04 refresh pub`
+- `AEMET calor 05 publica estadisticas`
+
+Por defecto el primer paso arranca a las `01:00` y los siguientes se espacian `15` minutos. Se puede ajustar así:
+
+```powershell
+.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20
+```
+
+Cada tarea ejecuta `infra/ingest/run_aemet_daily_step.ps1` y deja logs en `data-store/logs/scheduled-tasks/aemet`.
+
 ## Pipeline histórico FIRMS
 
 1. Asegura las nuevas estructuras:

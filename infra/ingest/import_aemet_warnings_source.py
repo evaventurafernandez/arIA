@@ -19,6 +19,8 @@ from typing import Iterable
 import psycopg
 from dotenv import dotenv_values
 
+from daily_window import resolve_date_range
+
 
 DATASET_ID = "aemet_avisos_cap_archive"
 SOURCE_SYSTEM = "aemet"
@@ -71,8 +73,8 @@ def parse_args() -> argparse.Namespace:
         "--input-root",
         default=str(root_dir / "data-store/files/raw/aemet/avisos_cap/archive"),
     )
-    parser.add_argument("--date-from", default="2025-05-01")
-    parser.add_argument("--date-to", default="2025-08-31")
+    parser.add_argument("--date-from", default=None, help="Primer día válido. Si se omite junto a --date-to, se procesa ayer.")
+    parser.add_argument("--date-to", default=None, help="Último día válido. Si se omite junto a --date-from, se procesa ayer.")
     parser.add_argument("--elaboration-lookback-days", type=int, default=3)
     parser.add_argument("--skip-hash-check", action="store_true")
     return parser.parse_args()
@@ -80,10 +82,6 @@ def parse_args() -> argparse.Namespace:
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def parse_date(value: str) -> date:
-    return date.fromisoformat(value)
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -665,8 +663,7 @@ def main() -> int:
     if not input_root.is_dir():
         raise FileNotFoundError(f"No existe el directorio {input_root}")
 
-    date_from = parse_date(args.date_from)
-    date_to = parse_date(args.date_to)
+    date_from, date_to, automatic_daily_window = resolve_date_range(args.date_from, args.date_to)
     manifest_paths = iter_manifest_paths(input_root)
     manifests: list[tuple[Path, dict]] = []
     for path in manifest_paths:
@@ -685,7 +682,11 @@ def main() -> int:
     imported_records = 0
     failed = 0
 
-    print(f"Importando {len(manifests)} bloques AEMET CAP desde {input_root}")
+    window_label = "ventana diaria automática" if automatic_daily_window else "rango explícito"
+    print(
+        f"Importando {len(manifests)} bloques AEMET CAP desde {input_root} "
+        f"({date_from.isoformat()} a {date_to.isoformat()}, {window_label})"
+    )
     with psycopg.connect(conninfo) as conn:
         for manifest_path, manifest in manifests:
             archive_path = repo_dir / manifest["source_file_path"]
