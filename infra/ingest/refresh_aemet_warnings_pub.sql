@@ -1,0 +1,3 @@
+REFRESH MATERIALIZED VIEW pub.aemet_max_temperature_daily_feature;
+
+ANALYZE pub.aemet_max_temperature_daily_feature;

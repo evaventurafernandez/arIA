@@ -13,6 +13,9 @@ Este directorio contiene la base del entorno Docker para la PoC de `landcover`.
 - `infra/postgres/initdb/006_burnt_area_source.sql`: catalogo diario `source` de burnt area Copernicus CLMS.
 - `infra/postgres/initdb/007_burnt_area_core.sql`: estructura canonica `core` por dia, version y formato de burnt area.
 - `infra/postgres/initdb/008_burnt_area_pub.sql`: publicacion ligera de disponibilidad y tabla de estadisticas diarias de burnt area.
+- `infra/postgres/initdb/009_firms_history_source.sql`: bloques CSV descargados y observaciones `source` del historico diario NASA FIRMS.
+- `infra/postgres/initdb/010_firms_history_core.sql`: estructura canonica deduplicada `core` del historico de focos FIRMS.
+- `infra/postgres/initdb/011_firms_history_pub.sql`: publicacion diaria `pub` con cobertura y estadisticas pais del historico FIRMS.
 
 ## Estructura base
 

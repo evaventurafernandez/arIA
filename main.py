@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     aemet_api_key: str = ""
     firms_map_key: str = ""
     firms_include_modis: bool = False
+    firms_historical_default_date_from: str = "2025-05-01"
+    firms_historical_default_date_to: str = "2025-08-31"
+    aemet_warnings_default_date_from: str = "2025-05-01"
+    aemet_warnings_default_date_to: str = "2025-08-31"
     effis_auto_refresh: bool = True
     effis_refresh_timeout: float = 30.0
     effis_refresh_retries: int = 3
@@ -66,15 +70,29 @@ alerts_cache:     list[dict] = []
 fires_cache:      list[dict] = []
 db_pool: ConnectionPool | None = None
 landcover_class_tile_source_available = False
+nucleos_mvt_source_available = False
 
 LANDCOVER_TILE_OVERVIEW_MAX_ZOOM = 8
 LANDCOVER_LAYER_METADATA_CACHE_TTL_SECONDS = 300.0
+NUCLEOS_LAYER_ID = "nucleos_poblacion"
+NUCLEOS_LAYER_NAME = "Nucleos de poblacion BTN (IGN)"
+NUCLEOS_MVT_LAYER_NAME = "nucleos_poblacion"
+NUCLEOS_TILE_MIN_ZOOM = 8
+NUCLEOS_LAYER_METADATA_CACHE_TTL_SECONDS = 300.0
 
 landcover_publication_cache_info = {
     "feature_count": 0,
     "refreshed_at": None,
 }
 landcover_layer_metadata_cache = {
+    "value": None,
+    "expires_at": 0.0,
+}
+nucleos_publication_cache_info = {
+    "feature_count": 0,
+    "refreshed_at": None,
+}
+nucleos_layer_metadata_cache = {
     "value": None,
     "expires_at": 0.0,
 }
@@ -96,6 +114,23 @@ BURNT_AREA_PREFERRED_VERSION = "v4"
 BURNT_AREA_PREFERRED_FORMAT = "cog"
 BURNT_AREA_DEFAULT_DATE_FROM = settings.burnt_area_default_date_from
 BURNT_AREA_DEFAULT_DATE_TO = settings.burnt_area_default_date_to
+FIRMS_HISTORICAL_LAYER_ID = "firms_hotspot_historical"
+FIRMS_HISTORICAL_LAYER_NAME = "Focos históricos NASA FIRMS"
+FIRMS_HISTORICAL_DATASET_TYPE = "SP"
+FIRMS_HISTORICAL_SOURCES = ("VIIRS_NOAA20_SP", "VIIRS_SNPP_SP")
+FIRMS_HISTORICAL_BBOX_REGIONS = ("peninsula_baleares", "canarias", "ceuta_melilla")
+FIRMS_HISTORICAL_DEFAULT_DATE_FROM = settings.firms_historical_default_date_from
+FIRMS_HISTORICAL_DEFAULT_DATE_TO = settings.firms_historical_default_date_to
+FIRMS_HISTORICAL_FEATURE_LIMIT_DEFAULT = 5000
+FIRMS_HISTORICAL_FEATURE_LIMIT_MAX = 20000
+AEMET_MAX_TEMPERATURE_LAYER_ID = "aemet_max_temperature_warnings"
+AEMET_MAX_TEMPERATURE_DATASET_ID = "aemet_max_temperature_warning_historical"
+AEMET_MAX_TEMPERATURE_LAYER_NAME = "Avisos AEMET históricos de temperaturas máximas"
+AEMET_MAX_TEMPERATURE_DEFAULT_DATE_FROM = settings.aemet_warnings_default_date_from
+AEMET_MAX_TEMPERATURE_DEFAULT_DATE_TO = settings.aemet_warnings_default_date_to
+AEMET_MAX_TEMPERATURE_FEATURE_LIMIT_DEFAULT = 2000
+AEMET_MAX_TEMPERATURE_FEATURE_LIMIT_MAX = 10000
+AEMET_MAX_TEMPERATURE_MVT_LAYER_NAME = "aemet_max_temp"
 BURNT_AREA_TILE_MIN_ZOOM = 4
 BURNT_AREA_TILE_MAX_ZOOM = 10
 BURNT_AREA_CATALOG_ENTRY_PATHS = {
@@ -556,6 +591,8 @@ def build_burnt_area_layer_metadata() -> dict:
         "timeline_url": "/api/burnt-area/timeline",
         "stats_url": "/api/burnt-area/stats/daily",
         "tile_url_template": "/api/burnt-area/tiles/{version}/{date}/{z}/{x}/{y}.png",
+        "tile_modes": ["daily", "cumulative"],
+        "tile_mode_parameter": "mode",
         "publication_mode": "local_png_tiles",
         "tile_min_zoom": BURNT_AREA_TILE_MIN_ZOOM,
         "tile_max_zoom": BURNT_AREA_TILE_MAX_ZOOM,
@@ -575,6 +612,47 @@ def build_burnt_area_timeline_payload(
         row["nominal_date"]: row
         for row in query_burnt_area_stats_rows(dataset_version, delivery_format, date_from, date_to)
     }
+    dates = []
+    cumulative_burned_area_ha = 0.0
+    cumulative_burned_pixel_count = 0
+    cumulative_has_area = False
+    cumulative_has_pixels = False
+    cumulative_tile_date_count = 0
+
+    for item in items:
+        stats = stats_index.get(item["nominal_date"], {})
+        burned_area_ha = stats.get("burned_area_ha")
+        burned_pixel_count = stats.get("burned_pixel_count")
+        if burned_area_ha is not None:
+            cumulative_burned_area_ha += float(burned_area_ha)
+            cumulative_has_area = True
+        if burned_pixel_count is not None:
+            cumulative_burned_pixel_count += int(burned_pixel_count)
+            cumulative_has_pixels = True
+        if item.get("has_local_tiles"):
+            cumulative_tile_date_count += 1
+
+        dates.append(
+            {
+                "date": item["nominal_date"],
+                "publication_status": item.get("publication_status", "cataloged"),
+                "has_local_file": bool(item.get("has_local_file", False)),
+                "has_local_spain_cog": bool(item.get("has_local_spain_cog", False)),
+                "has_local_tiles": bool(item.get("has_local_tiles", False)),
+                "has_cumulative_tiles": cumulative_tile_date_count > 0,
+                "cumulative_tile_date_count": cumulative_tile_date_count,
+                "burned_area_ha": burned_area_ha,
+                "burned_pixel_count": burned_pixel_count,
+                "cumulative_burned_area_ha": (
+                    cumulative_burned_area_ha if cumulative_has_area else None
+                ),
+                "cumulative_burned_pixel_count": (
+                    cumulative_burned_pixel_count if cumulative_has_pixels else None
+                ),
+                "stats_generated_at": stats.get("stats_generated_at"),
+            }
+        )
+
     return {
         "layer_id": BURNT_AREA_LAYER_ID,
         "dataset_version": dataset_version,
@@ -582,19 +660,7 @@ def build_burnt_area_timeline_payload(
         "date_from": date_from,
         "date_to": date_to,
         "date_count": len(items),
-        "dates": [
-            {
-                "date": item["nominal_date"],
-                "publication_status": item.get("publication_status", "cataloged"),
-                "has_local_file": bool(item.get("has_local_file", False)),
-                "has_local_spain_cog": bool(item.get("has_local_spain_cog", False)),
-                "has_local_tiles": bool(item.get("has_local_tiles", False)),
-                "burned_area_ha": stats_index.get(item["nominal_date"], {}).get("burned_area_ha"),
-                "burned_pixel_count": stats_index.get(item["nominal_date"], {}).get("burned_pixel_count"),
-                "stats_generated_at": stats_index.get(item["nominal_date"], {}).get("stats_generated_at"),
-            }
-            for item in items
-        ],
+        "dates": dates,
     }
 
 
@@ -640,6 +706,629 @@ def build_burnt_area_daily_stats_payload(
     }
 
 
+def query_firms_historical_stats_rows(
+    date_from: str | None,
+    date_to: str | None,
+) -> list[dict]:
+    if not postgres_relation_exists("pub.firms_hotspot_daily_stat"):
+        return []
+    base_where_clauses = [
+        "dataset_type = %s",
+        "stat_scope = 'country'",
+        "area_code = 'ES'",
+    ]
+    base_params: list[object] = [FIRMS_HISTORICAL_DATASET_TYPE]
+    if date_from:
+        base_where_clauses.append("nominal_date >= %s")
+        base_params.append(date_from)
+    if date_to:
+        base_where_clauses.append("nominal_date <= %s")
+        base_params.append(date_to)
+
+    sql = f"""
+    SELECT
+        nominal_date::text,
+        coverage_expected_unit_count,
+        coverage_unit_count,
+        coverage_complete,
+        hotspot_count,
+        high_confidence_count,
+        nominal_confidence_count,
+        low_confidence_count,
+        day_count,
+        night_count,
+        frp_sum_mw,
+        frp_max_mw,
+        source_count,
+        source_list,
+        bbox_region_list,
+        stats_generated_at
+    FROM pub.firms_hotspot_daily_stat
+    WHERE {' AND '.join(base_where_clauses)}
+    ORDER BY nominal_date
+    """
+    params = tuple(base_params)
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [
+        {
+            "nominal_date": row[0],
+            "coverage_expected_unit_count": int(row[1]),
+            "coverage_unit_count": int(row[2]),
+            "coverage_complete": bool(row[3]),
+            "hotspot_count": int(row[4]),
+            "high_confidence_count": int(row[5]),
+            "nominal_confidence_count": int(row[6]),
+            "low_confidence_count": int(row[7]),
+            "day_count": int(row[8]),
+            "night_count": int(row[9]),
+            "frp_sum_mw": float(row[10]) if row[10] is not None else 0.0,
+            "frp_max_mw": float(row[11]) if row[11] is not None else None,
+            "source_count": int(row[12]),
+            "source_list": list(row[13] or []),
+            "bbox_region_list": list(row[14] or []),
+            "stats_generated_at": row[15].isoformat() if row[15] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def build_firms_historical_layer_metadata() -> dict:
+    stats_rows = query_firms_historical_stats_rows(None, None)
+    available_dates = [row["nominal_date"] for row in stats_rows]
+    coverage_complete_date_count = sum(1 for row in stats_rows if row["coverage_complete"])
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "name": FIRMS_HISTORICAL_LAYER_NAME,
+        "description": (
+            "Histórico vectorial diario de focos NASA FIRMS persistido en PostGIS, "
+            "con serie temporal país y consulta GeoJSON por fecha."
+        ),
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "supported_sources": list(FIRMS_HISTORICAL_SOURCES),
+        "bbox_regions": list(FIRMS_HISTORICAL_BBOX_REGIONS),
+        "available": bool(stats_rows),
+        "default_date_from": FIRMS_HISTORICAL_DEFAULT_DATE_FROM,
+        "default_date_to": FIRMS_HISTORICAL_DEFAULT_DATE_TO,
+        "min_date": available_dates[0] if available_dates else None,
+        "max_date": available_dates[-1] if available_dates else None,
+        "date_count": len(available_dates),
+        "coverage_complete_date_count": coverage_complete_date_count,
+        "timeline_url": "/api/firms/history/timeline",
+        "stats_url": "/api/firms/history/stats/daily",
+        "features_url_template": "/api/firms/history/features?date={date}",
+        "publication_mode": "postgres_geojson",
+    }
+
+
+def build_firms_historical_timeline_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    stats_rows = query_firms_historical_stats_rows(date_from, date_to)
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "date_from": date_from,
+        "date_to": date_to,
+        "date_count": len(stats_rows),
+        "dates": [
+            {
+                "date": row["nominal_date"],
+                "coverage_expected_unit_count": row["coverage_expected_unit_count"],
+                "coverage_unit_count": row["coverage_unit_count"],
+                "coverage_complete": row["coverage_complete"],
+                "hotspot_count": row["hotspot_count"],
+                "high_confidence_count": row["high_confidence_count"],
+                "nominal_confidence_count": row["nominal_confidence_count"],
+                "low_confidence_count": row["low_confidence_count"],
+                "frp_max_mw": row["frp_max_mw"],
+                "stats_generated_at": row["stats_generated_at"],
+            }
+            for row in stats_rows
+        ],
+    }
+
+
+def build_firms_historical_daily_stats_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    return {
+        "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+        "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+        "date_from": date_from,
+        "date_to": date_to,
+        "stats_scope": "country",
+        "items": query_firms_historical_stats_rows(date_from, date_to),
+    }
+
+
+def query_firms_historical_feature_rows(
+    nominal_date: str,
+    firms_source: str | None,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> list[dict]:
+    if not postgres_relation_exists("core.firms_hotspot"):
+        return []
+    where_clauses = [
+        "fh.dataset_type = %s",
+        "fh.acq_date = %s::date",
+        "fh.confidence = ANY(%s)",
+    ]
+    params: list[object] = [
+        FIRMS_HISTORICAL_DATASET_TYPE,
+        nominal_date,
+        sorted(FIRMS_ALLOWED_CONFIDENCE),
+    ]
+    if firms_source:
+        where_clauses.append("fh.firms_source = %s")
+        params.append(firms_source)
+    if bbox_values is not None:
+        minx, miny, maxx, maxy = bbox_values
+        where_clauses.append("fh.geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)")
+        where_clauses.append("ST_Intersects(fh.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
+        params.extend([minx, miny, maxx, maxy, minx, miny, maxx, maxy])
+    params.append(limit)
+    sql = f"""
+    SELECT
+        fh.firms_source,
+        fh.latitude,
+        fh.longitude,
+        fh.acq_date::text,
+        fh.acq_time,
+        fh.satellite,
+        fh.confidence,
+        fh.frp,
+        fh.daynight,
+        fh.observed_at,
+        fh.bbox_regions
+    FROM core.firms_hotspot fh
+    WHERE {' AND '.join(where_clauses)}
+    ORDER BY fh.observed_at DESC, fh.frp DESC NULLS LAST, fh.firms_source
+    LIMIT %s
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    result = [
+        {
+            "firms_source": row[0],
+            "latitude": float(row[1]),
+            "longitude": float(row[2]),
+            "acq_date": row[3],
+            "acq_time": row[4],
+            "satellite": row[5],
+            "confidence": row[6],
+            "frp": float(row[7]) if row[7] is not None else None,
+            "daynight": row[8],
+            "observed_at": row[9].isoformat() if row[9] is not None else None,
+            "bbox_regions": list(row[10] or []),
+        }
+        for row in rows
+    ]
+    return result
+
+
+def build_firms_historical_feature_collection(
+    nominal_date: str,
+    firms_source: str | None,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> dict:
+    rows = query_firms_historical_feature_rows(nominal_date, firms_source, bbox_values, limit)
+    features = []
+    confidence_counts = {"h": 0, "n": 0, "l": 0}
+    for row in rows:
+        confidence_code = normalize_firms_confidence(row.get("confidence"))
+        if confidence_code in confidence_counts:
+            confidence_counts[confidence_code] += 1
+        frp = float(row.get("frp") or 0.0)
+        level, color = classify_frp(frp)
+        lat = row["latitude"]
+        lon = row["longitude"]
+        acq_date = row["acq_date"]
+        acq_time = row["acq_time"]
+        satellite = row["satellite"]
+        feature_id = f"{row['firms_source']}_{lat:.6f}_{lon:.6f}_{acq_date}_{acq_time}_{satellite}"
+        features.append(
+            {
+                "type": "Feature",
+                "id": feature_id,
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [lon, lat],
+                },
+                "properties": {
+                    "id": feature_id,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "acq_date": acq_date,
+                    "acq_time": acq_time,
+                    "satellite": satellite,
+                    "confidence": row["confidence"],
+                    "confidence_code": confidence_code,
+                    "confidence_label": firms_confidence_label(confidence_code),
+                    "frp": row["frp"],
+                    "daynight": row["daynight"],
+                    "level": level,
+                    "level_color": color,
+                    "intensity_label": level,
+                    "intensity_color": color,
+                    "acq_datetime_utc": row["observed_at"] or _format_acq_datetime_utc(acq_date, acq_time),
+                    "source": "firms_historical",
+                    "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+                    "firms_source": row["firms_source"],
+                    "bbox_regions": row["bbox_regions"],
+                },
+            }
+        )
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "layer_id": FIRMS_HISTORICAL_LAYER_ID,
+            "dataset_type": FIRMS_HISTORICAL_DATASET_TYPE,
+            "nominal_date": nominal_date,
+            "firms_source": firms_source,
+            "bbox_filter": list(bbox_values) if bbox_values is not None else None,
+            "limit": limit,
+            "feature_count": len(features),
+            "confidence_counts": confidence_counts,
+        },
+        "features": features,
+    }
+
+
+def query_aemet_max_temperature_stats_rows(
+    date_from: str | None,
+    date_to: str | None,
+) -> list[dict]:
+    if not postgres_relation_exists("pub.aemet_max_temperature_daily_stat"):
+        return []
+    where_clauses = [
+        "dataset_id = %s",
+        "stat_scope = 'country'",
+        "area_code = 'ES'",
+    ]
+    params: list[object] = [AEMET_MAX_TEMPERATURE_DATASET_ID]
+    if date_from:
+        where_clauses.append("nominal_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where_clauses.append("nominal_date <= %s")
+        params.append(date_to)
+
+    sql = f"""
+    SELECT
+        nominal_date::text,
+        coverage_expected_unit_count,
+        coverage_unit_count,
+        coverage_complete,
+        feature_count,
+        warning_count,
+        green_count,
+        yellow_count,
+        orange_count,
+        red_count,
+        max_temperature_c,
+        warned_area_count,
+        source_feature_count,
+        stats_generated_at
+    FROM pub.aemet_max_temperature_daily_stat
+    WHERE {' AND '.join(where_clauses)}
+    ORDER BY nominal_date
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    return [
+        {
+            "nominal_date": row[0],
+            "coverage_expected_unit_count": int(row[1]),
+            "coverage_unit_count": int(row[2]),
+            "coverage_complete": bool(row[3]),
+            "feature_count": int(row[4]),
+            "warning_count": int(row[5]),
+            "green_count": int(row[6]),
+            "yellow_count": int(row[7]),
+            "orange_count": int(row[8]),
+            "red_count": int(row[9]),
+            "max_temperature_c": float(row[10]) if row[10] is not None else None,
+            "warned_area_count": int(row[11]),
+            "source_feature_count": int(row[12]),
+            "stats_generated_at": row[13].isoformat() if row[13] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def build_aemet_max_temperature_layer_metadata() -> dict:
+    stats_rows = query_aemet_max_temperature_stats_rows(None, None)
+    available_dates = [row["nominal_date"] for row in stats_rows]
+    warning_date_count = sum(1 for row in stats_rows if row["warning_count"] > 0)
+    coverage_complete_date_count = sum(1 for row in stats_rows if row["coverage_complete"])
+    feature_count = sum(int(row["warning_count"]) for row in stats_rows)
+    return {
+        "layer_id": AEMET_MAX_TEMPERATURE_LAYER_ID,
+        "name": AEMET_MAX_TEMPERATURE_LAYER_NAME,
+        "description": (
+            "Histórico diario de avisos AEMET CAP filtrado al fenómeno "
+            "AT;Temperaturas máximas, publicado como estadísticas, GeoJSON y MVT."
+        ),
+        "event_code": "AT;Temperaturas máximas",
+        "parameter_code": "TA",
+        "available": bool(stats_rows),
+        "default_date_from": AEMET_MAX_TEMPERATURE_DEFAULT_DATE_FROM,
+        "default_date_to": AEMET_MAX_TEMPERATURE_DEFAULT_DATE_TO,
+        "min_date": available_dates[0] if available_dates else None,
+        "max_date": available_dates[-1] if available_dates else None,
+        "date_count": len(available_dates),
+        "warning_date_count": warning_date_count,
+        "coverage_complete_date_count": coverage_complete_date_count,
+        "warning_area_day_count": feature_count,
+        "timeline_url": "/api/aemet/max-temperature/timeline",
+        "stats_url": "/api/aemet/max-temperature/stats/daily",
+        "features_url_template": "/api/aemet/max-temperature/features?date={date}",
+        "tile_url_template": "/api/aemet/max-temperature/tiles/{date}/{z}/{x}/{y}.mvt",
+        "tile_layer_name": AEMET_MAX_TEMPERATURE_MVT_LAYER_NAME,
+        "publication_mode": "postgres_mvt",
+    }
+
+
+def build_aemet_max_temperature_timeline_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    stats_rows = query_aemet_max_temperature_stats_rows(date_from, date_to)
+    return {
+        "layer_id": AEMET_MAX_TEMPERATURE_LAYER_ID,
+        "event_code": "AT;Temperaturas máximas",
+        "date_from": date_from,
+        "date_to": date_to,
+        "date_count": len(stats_rows),
+        "dates": [
+            {
+                "date": row["nominal_date"],
+                "coverage_expected_unit_count": row["coverage_expected_unit_count"],
+                "coverage_unit_count": row["coverage_unit_count"],
+                "coverage_complete": row["coverage_complete"],
+                "feature_count": row["feature_count"],
+                "warning_count": row["warning_count"],
+                "green_count": row["green_count"],
+                "yellow_count": row["yellow_count"],
+                "orange_count": row["orange_count"],
+                "red_count": row["red_count"],
+                "max_temperature_c": row["max_temperature_c"],
+                "warned_area_count": row["warned_area_count"],
+                "stats_generated_at": row["stats_generated_at"],
+            }
+            for row in stats_rows
+        ],
+    }
+
+
+def build_aemet_max_temperature_daily_stats_payload(
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    return {
+        "layer_id": AEMET_MAX_TEMPERATURE_LAYER_ID,
+        "event_code": "AT;Temperaturas máximas",
+        "date_from": date_from,
+        "date_to": date_to,
+        "stats_scope": "country",
+        "items": query_aemet_max_temperature_stats_rows(date_from, date_to),
+    }
+
+
+def query_aemet_max_temperature_feature_rows(
+    nominal_date: str,
+    warnings_only: bool,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> list[dict]:
+    if not postgres_relation_exists("pub.aemet_max_temperature_daily_feature"):
+        return []
+    where_clauses = ["valid_date = %s::date"]
+    params: list[object] = [nominal_date]
+    if warnings_only:
+        where_clauses.append("is_warning")
+    if bbox_values is not None:
+        minx, miny, maxx, maxy = bbox_values
+        where_clauses.append("geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)")
+        where_clauses.append("ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
+        params.extend([minx, miny, maxx, maxy, minx, miny, maxx, maxy])
+    params.append(limit)
+    sql = f"""
+    SELECT
+        feature_id,
+        valid_date::text,
+        cap_identifier,
+        sent_at,
+        onset_at,
+        expires_at,
+        level_label,
+        level_color,
+        level_rank,
+        is_warning,
+        event_code,
+        phenomenon_label,
+        parameter_value,
+        temperature_max_c,
+        probability,
+        area_name,
+        area_code,
+        headline,
+        description,
+        source_version_count,
+        ST_AsGeoJSON(geom)::json
+    FROM pub.aemet_max_temperature_daily_feature
+    WHERE {' AND '.join(where_clauses)}
+    ORDER BY level_rank DESC, temperature_max_c DESC NULLS LAST, area_name
+    LIMIT %s
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    return [
+        {
+            "feature_id": row[0],
+            "valid_date": row[1],
+            "cap_identifier": row[2],
+            "sent_at": row[3].isoformat() if row[3] is not None else None,
+            "onset_at": row[4].isoformat() if row[4] is not None else None,
+            "expires_at": row[5].isoformat() if row[5] is not None else None,
+            "level_label": row[6],
+            "level_color": row[7],
+            "level_rank": int(row[8]),
+            "is_warning": bool(row[9]),
+            "event_code": row[10],
+            "phenomenon_label": row[11],
+            "parameter_value": row[12],
+            "temperature_max_c": float(row[13]) if row[13] is not None else None,
+            "probability": row[14],
+            "area_name": row[15],
+            "area_code": row[16],
+            "headline": row[17],
+            "description": row[18],
+            "source_version_count": int(row[19]),
+            "geometry": row[20],
+        }
+        for row in rows
+    ]
+
+
+def build_aemet_max_temperature_feature_collection(
+    nominal_date: str,
+    warnings_only: bool,
+    bbox_values: tuple[float, float, float, float] | None,
+    limit: int,
+) -> dict:
+    rows = query_aemet_max_temperature_feature_rows(nominal_date, warnings_only, bbox_values, limit)
+    features = [
+        {
+            "type": "Feature",
+            "id": row["feature_id"],
+            "geometry": row["geometry"],
+            "properties": {
+                key: value
+                for key, value in row.items()
+                if key not in {"geometry"}
+            },
+        }
+        for row in rows
+    ]
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "layer_id": AEMET_MAX_TEMPERATURE_LAYER_ID,
+            "event_code": "AT;Temperaturas máximas",
+            "nominal_date": nominal_date,
+            "warnings_only": warnings_only,
+            "bbox_filter": list(bbox_values) if bbox_values is not None else None,
+            "limit": limit,
+            "feature_count": len(features),
+        },
+        "features": features,
+    }
+
+
+def execute_aemet_max_temperature_mvt_query(sql: str, params: tuple[object, ...]) -> bytes:
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(sql, params)
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return b""
+    return bytes(row[0])
+
+
+def fetch_aemet_max_temperature_vector_tile(
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+    warnings_only: bool,
+) -> bytes:
+    if not postgres_relation_exists("pub.aemet_max_temperature_daily_feature"):
+        return b""
+    where_clauses = ["src.valid_date = %s::date"]
+    params: list[object] = [z, x, y, nominal_date]
+    if warnings_only:
+        where_clauses.append("src.is_warning")
+    sql = f"""
+    WITH tile_envelope AS (
+        SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+    ),
+    candidate_geom AS (
+        SELECT
+            src.feature_id,
+            src.valid_date::text AS valid_date,
+            src.area_code,
+            src.area_name,
+            src.level_label,
+            src.level_color,
+            src.level_rank,
+            src.is_warning,
+            src.parameter_value,
+            src.temperature_max_c,
+            src.probability,
+            src.onset_at,
+            src.expires_at,
+            src.sent_at,
+            src.source_version_count,
+            src.geom_webmercator
+        FROM pub.aemet_max_temperature_daily_feature AS src
+        CROSS JOIN tile_envelope AS env
+        WHERE {' AND '.join(where_clauses)}
+          AND src.geom_webmercator && env.geom
+          AND ST_Intersects(src.geom_webmercator, env.geom)
+    ),
+    mvtgeom AS (
+        SELECT
+            src.feature_id,
+            src.valid_date,
+            src.area_code,
+            src.area_name,
+            src.level_label,
+            src.level_color,
+            src.level_rank,
+            src.is_warning,
+            src.parameter_value,
+            src.temperature_max_c,
+            src.probability,
+            src.onset_at::text AS onset_at,
+            src.expires_at::text AS expires_at,
+            src.sent_at::text AS sent_at,
+            src.source_version_count,
+            ST_AsMVTGeom(src.geom_webmercator, env.geom, 4096, 64, true) AS geom
+        FROM candidate_geom AS src
+        CROSS JOIN tile_envelope AS env
+    )
+    SELECT ST_AsMVT(tile_rows, %s, 4096, 'geom')
+    FROM (
+        SELECT *
+        FROM mvtgeom
+        WHERE geom IS NOT NULL
+    ) AS tile_rows
+    """
+    return execute_aemet_max_temperature_mvt_query(
+        sql,
+        tuple(params + [AEMET_MAX_TEMPERATURE_MVT_LAYER_NAME]),
+    )
+
+
+def build_aemet_max_temperature_tile_cache_headers() -> dict[str, str]:
+    return {"Cache-Control": "public, max-age=86400"}
+
+
 def validate_burnt_area_variant(dataset_version: str, delivery_format: str) -> None:
     if dataset_version not in BURNT_AREA_SUPPORTED_VERSIONS:
         raise HTTPException(status_code=400, detail="dataset_version no soportada")
@@ -668,6 +1357,53 @@ def validate_burnt_area_zoom_level(value: int) -> int:
 
 def resolve_burnt_area_tile_path(dataset_version: str, nominal_date: str, z: int, x: int, y: int) -> Path:
     return Path(settings.burnt_area_tiles_root) / dataset_version / nominal_date / str(z) / str(x) / f"{y}.png"
+
+
+@lru_cache(maxsize=32)
+def list_burnt_area_tile_dates(tiles_root: str, dataset_version: str) -> tuple[str, ...]:
+    root_path = Path(tiles_root) / dataset_version
+    if not root_path.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            path.name
+            for path in root_path.iterdir()
+            if path.is_dir() and len(path.name) == 10
+        )
+    )
+
+
+@lru_cache(maxsize=8192)
+def build_burnt_area_cumulative_tile_png_cached(
+    tiles_root: str,
+    dataset_version: str,
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+) -> tuple[bytes, bool]:
+    canvas: Image.Image | None = None
+
+    for date_string in list_burnt_area_tile_dates(tiles_root, dataset_version):
+        if date_string > nominal_date:
+            break
+        tile_path = Path(tiles_root) / dataset_version / date_string / str(z) / str(x) / f"{y}.png"
+        if not tile_path.is_file():
+            continue
+        with Image.open(tile_path) as tile_image:
+            rgba = tile_image.convert("RGBA")
+            if canvas is None:
+                canvas = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+            if rgba.size != canvas.size:
+                rgba = rgba.resize(canvas.size)
+            canvas.alpha_composite(rgba)
+
+    if canvas is None:
+        return BURNT_AREA_TRANSPARENT_PNG, False
+
+    output = io.BytesIO()
+    canvas.save(output, format="PNG", optimize=True)
+    return output.getvalue(), True
 
 
 def resolve_burnt_area_tiles_zoom_dir(dataset_version: str, nominal_date: str, source_zoom: int) -> Path:
@@ -796,6 +1532,65 @@ def build_burnt_area_locator_geojson_cached(
             "dataset_version": dataset_version,
             "nominal_date": nominal_date,
             "source_zoom": source_zoom,
+            "tile_feature_count": len(features),
+            "pixel_count": total_pixels,
+            "run_count": total_runs,
+        },
+        "features": features,
+    }
+
+
+@lru_cache(maxsize=64)
+def build_burnt_area_cumulative_locator_geojson_cached(
+    tiles_root: str,
+    dataset_version: str,
+    nominal_date: str,
+    source_zoom: int,
+) -> dict:
+    features = []
+    total_pixels = 0
+    total_runs = 0
+    included_dates = []
+
+    for date_string in list_burnt_area_tile_dates(tiles_root, dataset_version):
+        if date_string > nominal_date:
+            break
+
+        daily_data = build_burnt_area_locator_geojson_cached(
+            tiles_root,
+            dataset_version,
+            date_string,
+            source_zoom,
+        )
+        daily_features = daily_data.get("features", [])
+        if not daily_features:
+            continue
+
+        included_dates.append(date_string)
+        metadata = daily_data.get("metadata", {})
+        total_pixels += int(metadata.get("pixel_count") or 0)
+        total_runs += int(metadata.get("run_count") or 0)
+        for feature in daily_features:
+            features.append(
+                {
+                    **feature,
+                    "properties": {
+                        **feature.get("properties", {}),
+                        "mode": "cumulative",
+                        "cumulative_date": nominal_date,
+                    },
+                }
+            )
+
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "dataset_version": dataset_version,
+            "nominal_date": nominal_date,
+            "source_zoom": source_zoom,
+            "mode": "cumulative",
+            "included_date_count": len(included_dates),
+            "included_dates": included_dates,
             "tile_feature_count": len(features),
             "pixel_count": total_pixels,
             "run_count": total_runs,
@@ -1009,10 +1804,39 @@ def reset_landcover_layer_metadata_cache() -> None:
         "expires_at": 0.0,
     }
 
+def set_nucleos_publication_cache(feature_count: int, refreshed_at: datetime | None) -> None:
+    global nucleos_publication_cache_info
+    nucleos_publication_cache_info = {
+        "feature_count": int(feature_count),
+        "refreshed_at": refreshed_at,
+    }
+
+def reset_nucleos_layer_metadata_cache() -> None:
+    global nucleos_layer_metadata_cache
+    nucleos_layer_metadata_cache = {
+        "value": None,
+        "expires_at": 0.0,
+    }
+
 def fetch_latest_landcover_refresh_timestamp() -> datetime | None:
     sql = """
     SELECT canonicalized_at
     FROM core.landcover_polygon
+    ORDER BY canonicalized_at DESC
+    LIMIT 1
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    return row[0] if row else None
+
+def fetch_latest_nucleos_refresh_timestamp() -> datetime | None:
+    if not postgres_relation_exists("core.nucleos_poblacion_polygon"):
+        return None
+    sql = """
+    SELECT canonicalized_at
+    FROM core.nucleos_poblacion_polygon
     ORDER BY canonicalized_at DESC
     LIMIT 1
     """
@@ -1287,6 +2111,244 @@ def fetch_landcover_vector_tile(z: int, x: int, y: int) -> bytes:
     if z <= LANDCOVER_TILE_OVERVIEW_MAX_ZOOM and landcover_class_tile_source_available:
         return fetch_landcover_overview_vector_tile(z, x, y, tolerance)
     return fetch_landcover_detail_vector_tile(z, x, y, tolerance)
+
+def query_nucleos_layer_metadata() -> dict:
+    if not postgres_relation_exists("core.nucleos_poblacion_polygon"):
+        return {
+            "layer_id": NUCLEOS_LAYER_ID,
+            "name": NUCLEOS_LAYER_NAME,
+            "available": False,
+            "geometry_type": "MultiPolygon",
+            "srid": 4326,
+            "feature_count": 0,
+            "bbox": None,
+            "refreshed_at": None,
+            "source_table": "core.nucleos_poblacion_polygon",
+            "tile_source_view": "pub.nucleos_poblacion_mvt_source",
+            "tile_feature_count": 0,
+            "render_mode": "mvt",
+            "tile_format": "application/vnd.mapbox-vector-tile",
+            "tile_url_template": "/api/nucleos/tiles/{z}/{x}/{y}.mvt",
+            "tile_layer_name": NUCLEOS_MVT_LAYER_NAME,
+            "min_zoom": NUCLEOS_TILE_MIN_ZOOM,
+        }
+
+    sql = """
+    SELECT jsonb_build_object(
+        'layer_id', %s::text,
+        'name', %s::text,
+        'available', COUNT(*) > 0,
+        'geometry_type', 'MultiPolygon',
+        'srid', 4326,
+        'feature_count', COUNT(*),
+        'bbox', CASE
+            WHEN COUNT(*) > 0 THEN jsonb_build_array(
+                ST_XMin(ST_Extent(geom)),
+                ST_YMin(ST_Extent(geom)),
+                ST_XMax(ST_Extent(geom)),
+                ST_YMax(ST_Extent(geom))
+            )
+            ELSE NULL
+        END,
+        'refreshed_at', max(canonicalized_at),
+        'source_table', 'core.nucleos_poblacion_polygon',
+        'tile_source_view', 'pub.nucleos_poblacion_mvt_source',
+        'tile_feature_count', CASE
+            WHEN to_regclass('pub.nucleos_poblacion_mvt_source') IS NOT NULL
+            THEN (SELECT count(*) FROM pub.nucleos_poblacion_mvt_source)
+            ELSE 0
+        END,
+        'render_mode', 'mvt',
+        'tile_format', 'application/vnd.mapbox-vector-tile',
+        'tile_url_template', '/api/nucleos/tiles/{z}/{x}/{y}.mvt',
+        'tile_layer_name', %s::text,
+        'min_zoom', %s::integer
+    )
+    FROM core.nucleos_poblacion_polygon
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (NUCLEOS_LAYER_ID, NUCLEOS_LAYER_NAME, NUCLEOS_MVT_LAYER_NAME, NUCLEOS_TILE_MIN_ZOOM))
+            row = cur.fetchone()
+    return row[0] if row and row[0] is not None else {
+        "layer_id": NUCLEOS_LAYER_ID,
+        "name": NUCLEOS_LAYER_NAME,
+        "available": False,
+        "geometry_type": "MultiPolygon",
+        "srid": 4326,
+        "feature_count": 0,
+        "bbox": None,
+        "refreshed_at": None,
+        "source_table": "core.nucleos_poblacion_polygon",
+        "tile_source_view": "pub.nucleos_poblacion_mvt_source",
+        "tile_feature_count": 0,
+        "render_mode": "mvt",
+        "tile_format": "application/vnd.mapbox-vector-tile",
+        "tile_url_template": "/api/nucleos/tiles/{z}/{x}/{y}.mvt",
+        "tile_layer_name": NUCLEOS_MVT_LAYER_NAME,
+        "min_zoom": NUCLEOS_TILE_MIN_ZOOM,
+    }
+
+def fetch_nucleos_layer_metadata() -> dict:
+    now = time.monotonic()
+    cached_value = nucleos_layer_metadata_cache["value"]
+    if cached_value is not None and now < nucleos_layer_metadata_cache["expires_at"]:
+        return cached_value
+
+    data = query_nucleos_layer_metadata()
+    nucleos_layer_metadata_cache["value"] = data
+    nucleos_layer_metadata_cache["expires_at"] = now + NUCLEOS_LAYER_METADATA_CACHE_TTL_SECONDS
+    return data
+
+def fetch_nucleos_publication_cache_info() -> dict:
+    return nucleos_publication_cache_info
+
+def build_nucleos_cache_headers() -> dict[str, str]:
+    cache_info = fetch_nucleos_publication_cache_info()
+    feature_count = int(cache_info["feature_count"] or 0)
+    refreshed_at = cache_info["refreshed_at"]
+    if feature_count <= 0 or refreshed_at is None:
+        return {"Cache-Control": "no-store"}
+
+    headers = {"Cache-Control": "public, max-age=300"}
+    refreshed_at_utc = refreshed_at.astimezone(timezone.utc)
+    headers["Last-Modified"] = format_datetime(refreshed_at_utc, usegmt=True)
+    headers["ETag"] = f'W/"nucleos-{feature_count}-{int(refreshed_at_utc.timestamp())}"'
+    return headers
+
+def build_nucleos_tile_cache_headers() -> dict[str, str]:
+    headers = build_nucleos_cache_headers()
+    if headers.get("Cache-Control") == "no-store":
+        return headers
+    headers["Cache-Control"] = "public, max-age=3600"
+    return headers
+
+def get_nucleos_tile_simplification_tolerance(z: int) -> float:
+    if z >= 15:
+        return 0.0
+    meters_per_pixel = 156543.03392804097 / (2 ** z)
+    if z <= 8:
+        factor = 0.35
+    elif z <= 10:
+        factor = 0.18
+    elif z <= 12:
+        factor = 0.08
+    else:
+        factor = 0.03
+    return meters_per_pixel * factor
+
+def get_nucleos_tile_min_population_rank(z: int) -> int:
+    if z <= 8:
+        return 4
+    if z == 9:
+        return 3
+    if z == 10:
+        return 2
+    return 1
+
+def execute_nucleos_vector_tile_query(sql: str, params: tuple[object, ...]) -> bytes:
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(sql, params)
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return b""
+    return bytes(row[0])
+
+def fetch_nucleos_vector_tile(z: int, x: int, y: int) -> bytes:
+    if z < NUCLEOS_TILE_MIN_ZOOM:
+        return b""
+    if int(nucleos_publication_cache_info["feature_count"] or 0) <= 0:
+        return b""
+    tolerance = get_nucleos_tile_simplification_tolerance(z)
+    min_population_rank = get_nucleos_tile_min_population_rank(z)
+    sql = """
+    WITH tile_envelope AS (
+        SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+    ),
+    candidate_geom AS (
+        SELECT
+            src.core_feature_id,
+            src.nombre,
+            src.habitantes,
+            src.population_class,
+            src.population_rank,
+            src.tipo_code,
+            src.tipo_label,
+            src.ine_code,
+            src.codigo_ep,
+            src.id_ep,
+            src.id_ng,
+            src.prioridad,
+            src.capital_code,
+            src.is_capital,
+            src.geom
+        FROM pub.nucleos_poblacion_mvt_source AS src
+        CROSS JOIN tile_envelope AS env
+        WHERE src.geom && env.geom
+          AND ST_Intersects(src.geom, env.geom)
+          AND (src.population_rank >= %s OR src.is_capital)
+    ),
+    mvtgeom AS (
+        SELECT
+            src.core_feature_id,
+            src.core_feature_id AS feature_id,
+            src.nombre,
+            src.nombre AS label,
+            src.habitantes,
+            src.population_class,
+            src.population_rank,
+            src.tipo_code,
+            src.tipo_label,
+            src.ine_code,
+            src.codigo_ep,
+            src.id_ep,
+            src.id_ng,
+            src.prioridad,
+            src.capital_code,
+            src.is_capital,
+            ST_AsMVTGeom(
+                CASE
+                    WHEN %s > 0 THEN ST_SimplifyPreserveTopology(src.geom, %s)
+                    ELSE src.geom
+                END,
+                env.geom,
+                4096,
+                64,
+                true
+            ) AS geom
+        FROM candidate_geom AS src
+        CROSS JOIN tile_envelope AS env
+    )
+    SELECT ST_AsMVT(tile_rows, %s::text, 4096, 'geom')
+    FROM (
+        SELECT
+            core_feature_id,
+            feature_id,
+            nombre,
+            label,
+            habitantes,
+            population_class,
+            population_rank,
+            tipo_code,
+            tipo_label,
+            ine_code,
+            codigo_ep,
+            id_ep,
+            id_ng,
+            prioridad,
+            capital_code,
+            is_capital,
+            geom
+        FROM mvtgeom
+        WHERE geom IS NOT NULL
+    ) AS tile_rows
+    """
+    return execute_nucleos_vector_tile_query(
+        sql,
+        (z, x, y, min_population_rank, tolerance, tolerance, NUCLEOS_MVT_LAYER_NAME),
+    )
 
 def get_landcover_zoom_config(
     zoom: int,
@@ -1764,10 +2826,10 @@ def is_in_spain(lat: float, lon: float) -> bool:
     return _SPAIN_GEOM.covers(Point(lon, lat))
 
 def classify_frp(frp: float) -> tuple[str, str]:
-    if frp > 75: return "Muy alta", "#8E1B1B"
-    if frp > 20: return "Alta",     "#E94F37"
-    if frp > 5:  return "Moderada", "#F8961E"
-    return             "Débil",     "#FFD166"
+    if frp > 200: return "Muy alto", "#8E1B1B"
+    if frp >= 50: return "Alto",     "#E94F37"
+    if frp >= 10: return "Medio",    "#F8961E"
+    return              "Bajo",      "#FFD166"
 
 def normalize_firms_confidence(value: str | None) -> str:
     raw = (value or "").strip().lower()
@@ -2044,7 +3106,7 @@ async def fetch_spain_hotspots() -> list[dict]:
         unique.setdefault(key, fire)
 
     fires = sorted(
-        unique.values(),
+        list(unique.values()),
         key=lambda f: (f.get("acq_datetime_utc") or "", float(f.get("frp") or 0)),
         reverse=True,
     )
@@ -2057,7 +3119,7 @@ fetch_firms_fires = fetch_spain_hotspots
 # Lifespan 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alerts_cache, fires_cache, db_pool, landcover_class_tile_source_available
+    global alerts_cache, fires_cache, db_pool, landcover_class_tile_source_available, nucleos_mvt_source_available
     print("Cargando geometria de Espana...")
     await load_spain_geometry()
 
@@ -2094,6 +3156,27 @@ async def lifespan(app: FastAPI):
                 else ", sin fuente agregada de bajo zoom"
             )
             + ")"
+        )
+        nucleos_tile_count = 0
+        nucleos_refreshed_at = None
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('pub.nucleos_poblacion_mvt_source')")
+                nucleos_mvt_source_available = cur.fetchone()[0] is not None
+                if nucleos_mvt_source_available:
+                    cur.execute("SELECT count(*) FROM pub.nucleos_poblacion_mvt_source")
+                    nucleos_tile_count = cur.fetchone()[0]
+        if nucleos_tile_count > 0:
+            nucleos_refreshed_at = fetch_latest_nucleos_refresh_timestamp()
+        set_nucleos_publication_cache(nucleos_tile_count, nucleos_refreshed_at)
+        reset_nucleos_layer_metadata_cache()
+        print(
+            "  Nucleos de poblacion "
+            + (
+                f"listos (pub.nucleos_poblacion_mvt_source={nucleos_tile_count} features para MVT)"
+                if nucleos_mvt_source_available
+                else "sin fuente MVT publicada"
+            )
         )
     except Exception:
         if db_pool is not None:
@@ -2241,26 +3324,59 @@ def get_burnt_area_daily_stats(
     return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
 
 @app.get("/api/burnt-area/tiles/{dataset_version}/{nominal_date}/{z:int}/{x:int}/{y:int}.png")
-def get_burnt_area_tile(dataset_version: str, nominal_date: str, z: int, x: int, y: int):
-    """Tesela PNG local de burnt area para una fecha concreta.
+def get_burnt_area_tile(
+    dataset_version: str,
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+    mode: str = Query("daily"),
+):
+    """Tesela PNG local de burnt area para una fecha concreta o acumulada.
 
     Mientras no existan teselas locales generadas, responde PNG transparente
     para que el cliente pueda inicializar la capa temporal sin romper el visor.
     """
     validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
     normalized_date = validate_burnt_area_date_string(nominal_date)
+    if mode not in {"daily", "cumulative"}:
+        raise HTTPException(status_code=400, detail="mode debe ser daily o cumulative")
     if z < 0 or x < 0 or y < 0:
         raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
 
+    if mode == "cumulative":
+        tile, has_content = build_burnt_area_cumulative_tile_png_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            z,
+            x,
+            y,
+        )
+        return Response(
+            content=tile,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=86400" if has_content else "no-store",
+                "X-Burnt-Area-Mode": "cumulative",
+                "X-Burnt-Area-Status": "ok" if has_content else "missing-cumulative-tile",
+            },
+        )
+
     tile_path = resolve_burnt_area_tile_path(dataset_version, normalized_date, z, x, y)
     if tile_path.is_file():
-        return FileResponse(tile_path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return FileResponse(
+            tile_path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400", "X-Burnt-Area-Mode": "daily"},
+        )
 
     return Response(
         content=BURNT_AREA_TRANSPARENT_PNG,
         media_type="image/png",
         headers={
             "Cache-Control": "no-store",
+            "X-Burnt-Area-Mode": "daily",
             "X-Burnt-Area-Status": "missing-local-tile",
         },
     )
@@ -2271,18 +3387,202 @@ def get_burnt_area_locator(
     dataset_version: str,
     nominal_date: str,
     source_zoom: int = Query(10),
+    mode: str = Query("daily"),
 ):
-    """Vector localizador aproximado derivado de las PNG no vacias para destacar el raster."""
+    """Vector localizador aproximado derivado de las PNG no vacias para destacar areas quemadas."""
     validate_burnt_area_variant(dataset_version, BURNT_AREA_PREFERRED_FORMAT)
     normalized_date = validate_burnt_area_date_string(nominal_date)
     normalized_zoom = validate_burnt_area_zoom_level(source_zoom)
-    data = build_burnt_area_locator_geojson_cached(
-        settings.burnt_area_tiles_root,
-        dataset_version,
-        normalized_date,
-        normalized_zoom,
-    )
+    if mode not in {"daily", "cumulative"}:
+        raise HTTPException(status_code=400, detail="mode debe ser daily o cumulative")
+    if mode == "cumulative":
+        data = build_burnt_area_cumulative_locator_geojson_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            normalized_zoom,
+        )
+    else:
+        data = build_burnt_area_locator_geojson_cached(
+            settings.burnt_area_tiles_root,
+            dataset_version,
+            normalized_date,
+            normalized_zoom,
+        )
     return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/layers/aemet-max-temperature")
+def get_aemet_max_temperature_layer_metadata():
+    """Metadatos de la capa histórica de avisos AEMET por temperaturas máximas."""
+    data = build_aemet_max_temperature_layer_metadata()
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/aemet/max-temperature/timeline")
+def get_aemet_max_temperature_timeline(
+    date_from: str | None = Query(AEMET_MAX_TEMPERATURE_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(AEMET_MAX_TEMPERATURE_DEFAULT_DATE_TO),
+):
+    """Timeline diaria publicada para avisos AEMET de temperaturas máximas."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_aemet_max_temperature_timeline_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/aemet/max-temperature/stats/daily")
+def get_aemet_max_temperature_daily_stats(
+    date_from: str | None = Query(AEMET_MAX_TEMPERATURE_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(AEMET_MAX_TEMPERATURE_DEFAULT_DATE_TO),
+):
+    """Serie diaria país de avisos AEMET de temperaturas máximas."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_aemet_max_temperature_daily_stats_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/aemet/max-temperature/features")
+def get_aemet_max_temperature_features(
+    nominal_date: str = Query(..., alias="date"),
+    warnings_only: bool = Query(True),
+    bbox: str | None = Query(None, description="BBox EPSG:4326 con formato minx,miny,maxx,maxy"),
+    limit: int = Query(
+        AEMET_MAX_TEMPERATURE_FEATURE_LIMIT_DEFAULT,
+        ge=1,
+        le=AEMET_MAX_TEMPERATURE_FEATURE_LIMIT_MAX,
+    ),
+):
+    """GeoJSON histórico de avisos AEMET por temperaturas máximas para una fecha."""
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    bbox_values: tuple[float, float, float, float] | None = None
+    if bbox:
+        try:
+            coords = [float(value) for value in bbox.split(",")]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="bbox debe contener cuatro numeros") from exc
+        if len(coords) != 4:
+            raise HTTPException(status_code=400, detail="bbox debe tener formato minx,miny,maxx,maxy")
+        minx, miny, maxx, maxy = coords
+        if minx >= maxx or miny >= maxy:
+            raise HTTPException(status_code=400, detail="bbox invalido: min debe ser menor que max")
+        bbox_values = (minx, miny, maxx, maxy)
+    data = build_aemet_max_temperature_feature_collection(
+        normalized_date,
+        warnings_only,
+        bbox_values,
+        limit,
+    )
+    return JSONResponse(
+        content=data,
+        headers={"Cache-Control": "public, max-age=86400"},
+        media_type="application/geo+json",
+    )
+
+@app.get("/api/aemet/max-temperature/tiles/{nominal_date}/{z:int}/{x:int}/{y:int}.mvt")
+def get_aemet_max_temperature_vector_tile(
+    nominal_date: str,
+    z: int,
+    x: int,
+    y: int,
+    warnings_only: bool = Query(True),
+):
+    """Teselas MVT históricas de avisos AEMET por temperaturas máximas."""
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no válidas")
+    try:
+        tile = fetch_aemet_max_temperature_vector_tile(normalized_date, z, x, y, warnings_only)
+        headers = build_aemet_max_temperature_tile_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT AEMET: {exc}") from exc
+    return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
+
+@app.get("/api/layers/firms-history")
+def get_firms_historical_layer_metadata():
+    """Metadatos de la capa temporal histórica de focos NASA FIRMS."""
+    data = build_firms_historical_layer_metadata()
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/timeline")
+def get_firms_historical_timeline(
+    date_from: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_TO),
+):
+    """Timeline diaria publicada para el histórico FIRMS."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_firms_historical_timeline_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/stats/daily")
+def get_firms_historical_daily_stats(
+    date_from: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_FROM),
+    date_to: str | None = Query(FIRMS_HISTORICAL_DEFAULT_DATE_TO),
+):
+    """Serie diaria de estadísticas país del histórico FIRMS."""
+    normalized_date_from = validate_burnt_area_date_string(date_from) if date_from else None
+    normalized_date_to = validate_burnt_area_date_string(date_to) if date_to else None
+    data = build_firms_historical_daily_stats_payload(normalized_date_from, normalized_date_to)
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/api/firms/history/features")
+def get_firms_historical_features(
+    nominal_date: str = Query(..., alias="date"),
+    firms_source: str | None = Query(None, alias="source"),
+    bbox: str | None = Query(None, description="BBox EPSG:4326 con formato minx,miny,maxx,maxy"),
+    limit: int = Query(
+        FIRMS_HISTORICAL_FEATURE_LIMIT_DEFAULT,
+        ge=1,
+        le=FIRMS_HISTORICAL_FEATURE_LIMIT_MAX,
+    ),
+):
+    """GeoJSON histórico de focos FIRMS para una fecha concreta."""
+    normalized_date = validate_burnt_area_date_string(nominal_date)
+    if firms_source is not None and firms_source not in FIRMS_HISTORICAL_SOURCES:
+        raise HTTPException(status_code=400, detail="source no soportado")
+    bbox_values: tuple[float, float, float, float] | None = None
+    if bbox:
+        try:
+            coords = [float(value) for value in bbox.split(",")]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="bbox debe contener cuatro numeros") from exc
+        if len(coords) != 4:
+            raise HTTPException(status_code=400, detail="bbox debe tener formato minx,miny,maxx,maxy")
+        minx, miny, maxx, maxy = coords
+        if minx >= maxx or miny >= maxy:
+            raise HTTPException(status_code=400, detail="bbox invalido: min debe ser menor que max")
+        bbox_values = (minx, miny, maxx, maxy)
+    data = build_firms_historical_feature_collection(
+        normalized_date,
+        firms_source,
+        bbox_values,
+        limit,
+    )
+    return JSONResponse(
+        content=data,
+        headers={"Cache-Control": "public, max-age=86400"},
+        media_type="application/geo+json",
+    )
+
+@app.get("/api/layers/nucleos")
+def get_nucleos_layer_metadata():
+    """Metadatos basicos de la capa de nucleos de poblacion publicada."""
+    try:
+        data = fetch_nucleos_layer_metadata()
+        headers = build_nucleos_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando metadata de nucleos: {exc}") from exc
+    return JSONResponse(content=data, headers=headers)
+
+@app.get("/api/nucleos/tiles/{z:int}/{x:int}/{y:int}.mvt")
+def get_nucleos_vector_tile(z: int, x: int, y: int):
+    """Vector tiles MVT de nucleos de poblacion servidas desde PostGIS."""
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
+    try:
+        tile = fetch_nucleos_vector_tile(z, x, y)
+        headers = build_nucleos_tile_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT de nucleos: {exc}") from exc
+    return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
  
 @app.get("/api/landcover")
 def get_landcover():

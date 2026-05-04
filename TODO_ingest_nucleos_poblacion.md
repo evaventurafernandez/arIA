@@ -23,6 +23,7 @@ El objetivo funcional final es servir los polígonos de núcleos según entren e
 - La ingestión operativa se hará desde el `GeoPackage` incluido en el ZIP, no desde el `GeoJSON` histórico `data/nucleos.geojson`.
 - Se reutilizará la tabla común `ingest.ingest_file` para trazabilidad de carga.
 - La publicación orientada al visor será, salvo problema detectado en la inspección, `MVT` por teselas.
+- La capa operativa (`core`/`pub`) excluirá los registros sin dato de habitantes o con `0` habitantes. En escenarios de emergencia esos elementos no aportan exposición humana directa y el riesgo poblacional asociado se considera nulo, aunque el nivel `source` conserva el dato original para trazabilidad.
 - El flujo previsto es:
 
 ```text
@@ -113,6 +114,7 @@ Variables útiles previstas:
 - [ ] Homogeneizar nombres de atributos para el backend y el frontend.
 - [ ] Decidir si se conserva una fila por feature original o si hay alguna agregación previa.
 - [ ] Añadir un identificador técnico estable para detalle y popup.
+- [x] Filtrar de la capa explotable los núcleos con `habitantes IS NULL` o `habitantes <= 0`, manteniéndolos solo en `source`.
 
 Atributos candidatos en `core` si existen o se pueden derivar:
 
@@ -184,7 +186,7 @@ Endpoints previstos:
 ## Decisiones pendientes antes de implementar
 
 - [ ] Confirmar el nombre exacto de la capa dentro del `GeoPackage`.
-- [ ] Decidir si se usarán todos los núcleos o algún filtro por tamaño/población.
+- [x] Usar solo núcleos con habitantes positivos en la capa operativa; los registros sin dato o con `0` habitantes quedan fuera porque su riesgo poblacional es nulo en el contexto de emergencias.
 - [ ] Decidir si la simbología dependerá de `habitantes`, `tipo` o un estilo único.
 - [ ] Confirmar si necesitamos una fuente MVT simplificada para bajo zoom.
 - [ ] Decidir si el `GeoJSON` histórico `data/nucleos.geojson` seguirá existiendo como salida auxiliar o quedará obsoleto.

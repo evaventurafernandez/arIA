@@ -11,6 +11,123 @@ Además, el repositorio incorpora ya el pipeline base de `burnt area` diario par
 
 La ingesta puede trabajar con `all.zip` o con la carpeta extraída `data/copernicus/data_burnt_areas`, consolidar una fila por día/version/formato y completar después el tramo raster con recorte a España, teselas PNG locales y estadística diaria país.
 
+También incorpora un pipeline histórico diario para focos NASA FIRMS en España, con separación `raw -> source -> core -> pub`:
+
+- `source.firms_hotspot_download_file`
+- `source.firms_hotspot_observation`
+- `core.firms_hotspot`
+- `pub.firms_hotspot_daily_catalog`
+- `pub.firms_hotspot_daily_stat`
+
+El flujo descarga bloques CSV `SP` de `VIIRS_NOAA20_SP` y `VIIRS_SNPP_SP`, conserva los ficheros brutos y sus manifiestos en `data-store/files/raw/nasa/firms/historical`, deduplica en `core` y publica una serie diaria país que mantiene días con `0` focos si la cobertura del día es completa.
+
+El histórico diario de avisos AEMET para temperaturas máximas sigue el mismo patrón `raw -> source -> core -> pub`:
+
+- `source.aemet_warning_download_file`
+- `source.aemet_warning_cap_record`
+- `core.aemet_max_temperature_warning`
+- `pub.aemet_max_temperature_daily_feature`
+- `pub.aemet_max_temperature_daily_stat`
+
+La descarga usa el endpoint oficial de archivo CAP por rango de elaboración, guarda los `tar` brutos y sus manifiestos en `data-store/files/raw/aemet/avisos_cap/archive`, filtra localmente el fenómeno `AT;Temperaturas máximas`, deduplica avisos CAP y publica una capa diaria optimizada para GeoJSON y teselas MVT. La publicación diaria conserva trazabilidad de nivel verde en base de datos, pero el visor consume por defecto solo niveles adversos (`Amarillo`, `Naranja`, `Rojo`).
+
+## Pipeline histórico AEMET temperaturas máximas
+
+1. Asegura las nuevas estructuras:
+
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/012_aemet_warnings_source.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/013_aemet_warnings_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/014_aemet_warnings_pub.sql
+   ```
+
+2. Descarga el histórico bruto. El `lookback` captura avisos válidos al inicio del rango aunque se elaborasen antes:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/download_aemet_warnings_historical_sources.py --date-from 2025-05-01 --date-to 2025-08-31 --elaboration-lookback-days 3 --block-days 2 --sleep-seconds 3 --max-retries 8
+   ```
+
+3. Importa `source` filtrado a `AT;Temperaturas máximas`:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/import_aemet_warnings_source.py --date-from 2025-05-01 --date-to 2025-08-31 --elaboration-lookback-days 3
+   ```
+
+4. Reconstruye `core` y la vista diaria optimizada:
+
+   ```bash
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_pub.sql
+   ```
+
+5. Publica la serie diaria país:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/publish_aemet_warnings.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
+### Automatización diaria AEMET
+
+Para el flujo incremental diario, los scripts AEMET procesan el día anterior en la zona horaria `Europe/Madrid` cuando no se indican `--date-from` ni `--date-to`.
+
+El alta de tareas en Windows se hace con:
+
+```powershell
+.\infra\ingest\register_aemet_daily_tasks.ps1
+```
+
+El script crea la carpeta de primer nivel `\TFG\` en el Programador de tareas y registra un paso diario por tarea:
+
+- `AEMET calor 01 descarga CAP`
+- `AEMET calor 02 importacion source`
+- `AEMET calor 03 refresh core`
+- `AEMET calor 04 refresh pub`
+- `AEMET calor 05 publica estadisticas`
+
+Por defecto el primer paso arranca a las `01:00` y los siguientes se espacian `15` minutos. Se puede ajustar así:
+
+```powershell
+.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20
+```
+
+Cada tarea ejecuta `infra/ingest/run_aemet_daily_step.ps1` y deja logs en `data-store/logs/scheduled-tasks/aemet`.
+
+## Pipeline histórico FIRMS
+
+1. Asegura las nuevas estructuras:
+
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/009_firms_history_source.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/010_firms_history_core.sql
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/011_firms_history_pub.sql
+   ```
+
+2. Descarga el histórico bruto:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/download_firms_historical_sources.py --date-from 2025-05-01 --date-to 2025-08-31 --block-days 5
+   ```
+
+3. Importa `source`:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/import_firms_historical_source.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
+4. Reconstruye `core`:
+
+   ```bash
+   docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_firms_historical_core.sql
+   ```
+
+5. Publica la serie diaria país:
+
+   ```bash
+   venv\Scripts\python.exe infra/ingest/publish_firms_historical.py --date-from 2025-05-01 --date-to 2025-08-31
+   ```
+
 ## Resultado final de la carga
 
 Una ejecución completa deja actualizados estos niveles:
