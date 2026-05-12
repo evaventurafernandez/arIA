@@ -4,7 +4,7 @@ param(
     [ValidateSet("download", "import-source", "refresh-core", "refresh-pub", "publish-stats", "pipeline")]
     [string]$Step,
 
-    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path,
+    [string]$RepoRoot = "",
 
     [string]$LogRoot = "",
 
@@ -16,6 +16,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+$env:PGCLIENTENCODING = "UTF8"
+
+if (-not $RepoRoot) {
+    $RepoRoot = Join-Path $PSScriptRoot "..\.."
+}
 
 $ResolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 if (-not $LogRoot) {
@@ -110,6 +118,18 @@ function Mark-StepStatus {
 
     $TargetDateKey = Get-TargetDateKey
     New-Item -ItemType Directory -Force -Path (Get-StateDir) | Out-Null
+
+    foreach ($ExistingStatus in @("ok", "failed")) {
+        if ($ExistingStatus -eq $Status) {
+            continue
+        }
+
+        $ExistingMarkerPath = Get-StepMarkerPath $TargetDateKey $StepName $ExistingStatus
+        if (Test-Path -LiteralPath $ExistingMarkerPath) {
+            Remove-Item -LiteralPath $ExistingMarkerPath -Force
+        }
+    }
+
     $MarkerPath = Get-StepMarkerPath $TargetDateKey $StepName $Status
     $Content = @(
         "step=$StepName",
@@ -145,11 +165,36 @@ function Invoke-LoggedCommand {
 
     Write-TaskLog ("> {0} {1}" -f $FilePath, ($Arguments -join " "))
     $global:LASTEXITCODE = 0
-    & $FilePath @Arguments 2>&1 | ForEach-Object {
-        $Text = ($_ | Out-String).TrimEnd()
-        if ($Text) {
-            Write-TaskLog $Text
+
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $InvocationError = $null
+    try {
+        # Native tools such as psql write NOTICE/WARNING messages to stderr even
+        # when they exit successfully. Log that stream, but let the exit code
+        # decide whether the step failed.
+        $ErrorActionPreference = "Continue"
+        & $FilePath @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $Text = $_.Exception.Message
+                if ($_.FullyQualifiedErrorId -ne "NativeCommandError") {
+                    $InvocationError = $_
+                }
+            }
+            else {
+                $Text = ($_ | Out-String).TrimEnd()
+            }
+
+            if ($Text) {
+                Write-TaskLog $Text
+            }
         }
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
+    if ($InvocationError) {
+        throw $InvocationError.Exception.Message
     }
 
     $ExitCode = [int]$global:LASTEXITCODE
@@ -231,6 +276,6 @@ try {
 }
 catch {
     Mark-StepStatus $script:ActiveStepName "failed"
-    Write-TaskLog ("ERROR paso '{0}': {1}" -f $Step, $_.Exception.Message)
+    Write-TaskLog ("ERROR paso '{0}': {1}" -f $script:ActiveStepName, $_.Exception.Message)
     exit 1
 }

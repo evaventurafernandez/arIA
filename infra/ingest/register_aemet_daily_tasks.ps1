@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path,
+    [string]$RepoRoot = "",
 
     [ValidatePattern("^[^\\/]+$")]
     [string]$TaskFolder = "TFG",
@@ -9,11 +9,18 @@ param(
     [string]$StartTime = "01:00",
 
     [ValidateRange(1, 120)]
-    [int]$StepSpacingMinutes = 15
+    [int]$StepSpacingMinutes = 15,
+
+    [ValidateRange(1, 24)]
+    [int]$ExecutionTimeLimitHours = 6
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+if (-not $RepoRoot) {
+    $RepoRoot = Join-Path $PSScriptRoot "..\.."
+}
 
 $ResolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $RunnerPath = Join-Path $ResolvedRepoRoot "infra\ingest\run_aemet_daily_step.ps1"
@@ -104,7 +111,7 @@ foreach ($Definition in $Definitions) {
     $Settings = New-ScheduledTaskSettingsSet `
         -StartWhenAvailable `
         -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+        -ExecutionTimeLimit (New-TimeSpan -Hours $ExecutionTimeLimitHours)
 
     $Task = New-ScheduledTask `
         -Action $Action `

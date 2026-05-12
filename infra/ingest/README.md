@@ -89,10 +89,10 @@ El script crea la carpeta de primer nivel `\TFG\` en el Programador de tareas y 
 - `AEMET calor 04 refresh pub`
 - `AEMET calor 05 publica estadisticas`
 
-Por defecto el primer paso arranca a las `01:00` y los siguientes se espacian `15` minutos. Se puede ajustar así:
+Por defecto el primer paso arranca a las `01:00`, los siguientes se espacian `15` minutos y cada tarea tiene un límite de ejecución de `6` horas. Se puede ajustar así:
 
 ```powershell
-.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20
+.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20 -ExecutionTimeLimitHours 6
 ```
 
 Cada tarea ejecuta `infra/ingest/run_aemet_daily_step.ps1` y deja logs en `data-store/logs/scheduled-tasks/aemet`. El runner escribe marcadores en `data-store/logs/scheduled-tasks/aemet/state` para que, si Windows lanza varios pasos atrasados a la vez con `StartWhenAvailable`, cada paso espere a que el anterior haya terminado correctamente. Para una ejecución manual completa y secuencial se puede usar:
