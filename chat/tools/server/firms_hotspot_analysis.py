@@ -107,7 +107,7 @@ async def firms_hotspot_analysis(
     sql = f"""
         WITH base AS (
             SELECT
-                fh.id,
+                fh.hotspot_id,
                 fh.frp,
                 fh.firms_source,
                 fh.acq_date,
@@ -120,7 +120,7 @@ async def firms_hotspot_analysis(
         ),
         clustered AS (
             SELECT
-                id, frp, firms_source, acq_date, geom,
+                hotspot_id, frp, firms_source, acq_date, geom,
                 ST_ClusterDBSCAN(geom3857, eps := %s, minpoints := %s) OVER () AS cluster_id
             FROM base
         )

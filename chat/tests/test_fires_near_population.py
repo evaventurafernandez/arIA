@@ -86,3 +86,21 @@ async def test_db_unavailable_returns_error_without_raising(monkeypatch):
     res = await fires_near_population(date_from="2025-08-01", date_to="2025-08-31")
     assert "error" in res
     assert res["total_matched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sql_uses_hotspot_id_not_id(patch_pool):
+    """Regresion: core.firms_hotspot tiene PK 'hotspot_id', no 'id'."""
+    pool = patch_pool([])
+    await fires_near_population(date_from="2025-08-01", date_to="2025-08-31")
+    sql = None
+    with pool.connection() as conn:
+        sql = conn.cursor_obj.last_sql
+    # patch_pool genera un FakePool nuevo por cada with, asi que el SQL
+    # del with anterior se perdio. Recurrimos a re-inspeccionar el modulo.
+    from chat.tools.server import fires_near_population as mod
+    import inspect
+    source = inspect.getsource(mod)
+    assert "fh.hotspot_id" in source
+    assert "fh.id::text" not in source
+    assert "fh.id," not in source

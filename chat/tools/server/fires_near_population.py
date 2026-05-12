@@ -75,15 +75,25 @@ async def fires_near_population(
     except RuntimeError as exc:
         return {"error": str(exc), "total_matched": 0, "items": []}
 
+    # Estrategia de rendimiento:
+    # 1) Filtro grueso con ST_DWithin sobre geometry (grados): aprovecha el
+    #    indice GIST de fh.geom y np.geom. El margen `deg_margin` es una
+    #    aproximacion de 1 grado ~= 111 km en latitudes medias; añadimos
+    #    20 % de holgura para no descartar candidatos cerca del umbral.
+    # 2) Calculo fino de la distancia con ST_Distance sobre geography (metros).
+    # 3) Filtro final por distancia <= distance_m.
+    # LATERAL con LIMIT 1 deja un solo nucleo (el mas cercano) por foco.
+    deg_margin = (float(distance_m) / 111_000.0) * 1.2
+
     where_extra = ""
-    params: list[Any] = [distance_m, date_from, date_to]
+    sensor_params: list[Any] = []
     if sensor:
         where_extra = "AND fh.firms_source = %s "
-        params.append(sensor)
+        sensor_params = [sensor]
 
     sql = f"""
         SELECT
-            fh.id::text,
+            fh.hotspot_id::text,
             fh.firms_source,
             fh.acq_date::text,
             fh.frp,
@@ -92,20 +102,24 @@ async def fires_near_population(
             fh.longitude,
             np.nombre,
             np.habitantes,
-            ST_Distance(fh.geom::geography, np.geom::geography) AS distance_m
+            np.distance_m
         FROM core.firms_hotspot fh
-        JOIN LATERAL (
-            SELECT n.nombre, n.habitantes, n.geom
+        CROSS JOIN LATERAL (
+            SELECT
+                n.nombre, n.habitantes,
+                ST_Distance(fh.geom::geography, n.geom::geography) AS distance_m
             FROM core.nucleos_poblacion_polygon n
-            WHERE ST_DWithin(fh.geom::geography, n.geom::geography, %s)
-            ORDER BY fh.geom::geography <-> n.geom::geography
+            WHERE ST_DWithin(fh.geom, n.geom, %s)
+            ORDER BY fh.geom <-> n.geom
             LIMIT 1
-        ) np ON TRUE
-        WHERE fh.acq_date >= %s AND fh.acq_date <= %s {where_extra}
-        ORDER BY distance_m ASC
+        ) np
+        WHERE fh.acq_date >= %s AND fh.acq_date <= %s
+          AND np.distance_m <= %s
+          {where_extra}
+        ORDER BY np.distance_m ASC
         LIMIT %s
     """
-    params.append(limit + 1)  # +1 para detectar truncado
+    params: list[Any] = [deg_margin, date_from, date_to, distance_m] + sensor_params + [limit + 1]
 
     try:
         with pool.connection() as conn:

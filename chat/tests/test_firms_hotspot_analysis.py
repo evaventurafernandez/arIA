@@ -69,3 +69,14 @@ async def test_db_unavailable_returns_error(monkeypatch):
     monkeypatch.setattr("main.get_db_pool", fail)
     res = await firms_hotspot_analysis(date_from="2025-08-01", date_to="2025-08-31")
     assert "error" in res
+
+
+def test_sql_uses_hotspot_id_not_id():
+    """Regresion: core.firms_hotspot tiene PK 'hotspot_id', no 'id'."""
+    from chat.tools.server import firms_hotspot_analysis as mod
+    import inspect
+    source = inspect.getsource(mod)
+    assert "fh.hotspot_id" in source
+    # No debe quedar 'fh.id' suelto en el SQL.
+    assert "fh.id," not in source
+    assert "fh.id\n" not in source
