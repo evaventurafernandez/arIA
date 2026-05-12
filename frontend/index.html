@@ -200,8 +200,29 @@
   </div>
 </div>
 
+<!-- Panel del chat LLM (Fase 2). Flotante, colapsable, esquina inferior derecha. -->
+<button id="chat-fab" type="button" aria-label="Abrir asistente">
+  <span class="chat-fab-icon">&#128172;</span>
+  <span class="chat-fab-text">Asistente</span>
+</button>
+
+<aside id="chat-panel" hidden aria-label="Asistente MeteoVisor">
+  <header id="chat-panel-header">
+    <span class="chat-panel-title">Asistente MeteoVisor</span>
+    <button id="chat-panel-close" type="button" aria-label="Cerrar">&times;</button>
+  </header>
+  <div id="chat-messages" class="chat-messages"></div>
+  <form id="chat-form" class="chat-form" autocomplete="off">
+    <textarea id="chat-input" class="chat-input" rows="2"
+              placeholder="Pregunta o pide una accion sobre el mapa..."></textarea>
+    <button id="chat-send" type="submit">Enviar</button>
+  </form>
+  <div id="chat-status" class="chat-status" aria-live="polite"></div>
+</aside>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.js"></script>
 <script src="app.js"></script>
+<script src="chat.js"></script>
 </body>
 </html>

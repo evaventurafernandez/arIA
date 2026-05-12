@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     cdse_s3_access_key: str = ""
     cdse_s3_secret_key: str = ""
     cdse_s3_endpoint: str = "eodata.dataspace.copernicus.eu"
+    # Chat LLM (Fase 0). Todos paramétricos vía .env.
+    llm_api_url: str = ""
+    llm_api_key: str = ""  # opcional: servidor abierto si está vacío
+    llm_model: str = ""
+    llm_max_tool_iterations: int = 8
+    llm_request_timeout: float = 120.0
+    # Chat LLM (Fase 6: endurecimiento)
+    chat_rate_limit: str = "30/minute"
+    chat_max_user_message_length: int = 4000
     class Config:
         env_file = ".env"
 
@@ -3096,9 +3105,13 @@ async def lifespan(app: FastAPI):
         db_pool = None
  
 
-# App 
+# App
 app = FastAPI(title="MeteoVisor Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Chat LLM (Fase 0+6)
+from chat.router import attach_chat_to  # noqa: E402
+attach_chat_to(app)
 
 
 # Endpoints
