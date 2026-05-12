@@ -75,3 +75,86 @@ def extract_assistant_text(payload: dict[str, Any]) -> str:
         return ""
     message = choices[0].get("message") or {}
     return (message.get("content") or "").strip()
+
+
+async def chat_completion_stream(
+    *,
+    messages: list[dict[str, Any]],
+    api_url: str,
+    api_key: str | None,
+    model: str,
+    tools: list[dict[str, Any]] | None = None,
+    timeout: float = 120.0,
+):
+    """Iterador asincrono sobre los chunks JSON del stream del LLM.
+
+    El servidor (vLLM, Ollama, OpenAI) responde con SSE: una linea
+    `data: {...}` por chunk y un terminador `data: [DONE]`. Esta funcion
+    parsea los chunks y los devuelve uno a uno. Las pegamientos de
+    tool_calls parciales son responsabilidad del consumidor (orquestador).
+    """
+    import json as _json
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST", api_url, json=payload, headers=headers
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread())[:500].decode("utf-8", errors="replace")
+                    raise LLMClientError(
+                        f"El LLM respondió {response.status_code}: {body}"
+                    )
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].lstrip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        yield _json.loads(data)
+                    except ValueError:
+                        # Chunk no JSON (keep-alive de algunos servidores) -> ignorar.
+                        continue
+    except httpx.HTTPError as exc:
+        raise LLMClientError(f"Fallo de red durante el stream del LLM: {exc}") from exc
+
+
+def accumulate_streamed_tool_calls(
+    chunks_deltas: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reconstruye los tool_calls completos desde los deltas parciales del stream.
+
+    Cada delta puede contener `tool_calls=[{index, id?, function:{name?, arguments?}}]`.
+    El campo `arguments` llega trozado caracter a caracter; hay que concatenar
+    por `index` en el orden de llegada.
+    """
+    acc: dict[int, dict[str, Any]] = {}
+    for delta in chunks_deltas:
+        for call in delta.get("tool_calls") or []:
+            idx = call.get("index", 0)
+            slot = acc.setdefault(idx, {"id": "", "name": "", "arguments_raw": ""})
+            if call.get("id"):
+                slot["id"] = call["id"]
+            fn = call.get("function") or {}
+            if fn.get("name"):
+                slot["name"] = fn["name"]
+            if fn.get("arguments"):
+                slot["arguments_raw"] += fn["arguments"]
+    return [acc[k] for k in sorted(acc.keys())]

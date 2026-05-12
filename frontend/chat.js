@@ -152,63 +152,89 @@ class ChatClient {
     this.inputEl.disabled = flag;
   }
 
-  renderAssistant(reply) {
-    const blocks = (reply && reply.blocks) || {};
-    const trace = (reply && reply.trace) || [];
-    const clientActions = (reply && reply.client_actions) || [];
+  startAssistantMessage() {
+    const div = this.appendMessage('assistant', '');
+    div.innerHTML =
+      '<div class="chat-block chat-block-streaming">' +
+        '<div class="chat-block-title">Procesando consulta...</div>' +
+        '<div class="chat-block-body" data-streaming-body></div>' +
+      '</div>' +
+      '<details class="chat-trace" data-streaming-trace hidden>' +
+        '<summary>Acciones realizadas (<span data-trace-count>0</span>)</summary>' +
+        '<div data-trace-entries></div>' +
+      '</details>' +
+      '<div data-final-blocks></div>' +
+      '<div data-client-actions hidden></div>';
+    return {
+      root: div,
+      streamingBody: div.querySelector('[data-streaming-body]'),
+      streamingBlock: div.querySelector('.chat-block-streaming'),
+      trace: div.querySelector('[data-streaming-trace]'),
+      traceEntries: div.querySelector('[data-trace-entries]'),
+      traceCount: div.querySelector('[data-trace-count]'),
+      finalBlocks: div.querySelector('[data-final-blocks]'),
+      clientActions: div.querySelector('[data-client-actions]'),
+      streamBuffer: '',
+      blocksRendered: {},
+      traceItems: 0,
+    };
+  }
 
-    const blockTitles = [
-      ['interpretacion', 'Consulta interpretada'],
-      ['operaciones', 'Operaciones'],
-      ['resultados', 'Resultados'],
-      ['interpretacion_emergencia', 'Interpretacion para emergencias'],
-    ];
-    const parts = [];
-    blockTitles.forEach(function (entry) {
-      const key = entry[0];
-      const label = entry[1];
-      const val = blocks[key];
-      if (!val) return;
-      parts.push(
-        '<div class="chat-block">' +
-          '<div class="chat-block-title">' + chatEscapeHtml(label) + '</div>' +
-          '<div class="chat-block-body">' + chatFormatText(val) + '</div>' +
-        '</div>'
-      );
-    });
+  appendToken(uiState, text) {
+    if (!uiState.streamingBlock) return;
+    uiState.streamBuffer += text;
+    uiState.streamingBody.textContent = uiState.streamBuffer;
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
 
-    if (trace.length) {
-      const entries = trace.map(function (t) {
-        const cls = t.ok ? '' : ' failed';
-        const args = JSON.stringify(t.arguments == null ? {} : t.arguments);
-        const summary = t.ok
-          ? chatEscapeHtml(t.result_summary || '')
-          : chatEscapeHtml(t.error || 'error');
-        return '<div class="chat-trace-entry' + cls + '">' +
-                 '<div><strong>' + chatEscapeHtml(t.tool) + '</strong>(' + chatEscapeHtml(args) + ')</div>' +
-                 '<div>' + summary + '</div>' +
-               '</div>';
-      }).join('');
-      parts.push(
-        '<details class="chat-trace">' +
-          '<summary>Acciones realizadas (' + trace.length + ')</summary>' +
-          entries +
-        '</details>'
-      );
+  addTraceEntry(uiState, tool, args, status, summary) {
+    if (!uiState.trace) return;
+    uiState.trace.hidden = false;
+    uiState.traceItems += 1;
+    uiState.traceCount.textContent = String(uiState.traceItems);
+    const cls = status === 'ok' ? '' : (status === 'pending' ? '' : ' failed');
+    const div = document.createElement('div');
+    div.className = 'chat-trace-entry' + cls;
+    div.innerHTML =
+      '<div><strong>' + chatEscapeHtml(tool) + '</strong>(' +
+        chatEscapeHtml(JSON.stringify(args || {})) + ')</div>' +
+      '<div>' + chatEscapeHtml(summary || '') + '</div>';
+    uiState.traceEntries.appendChild(div);
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    return div;
+  }
+
+  renderFinalBlock(uiState, key, content) {
+    const labels = {
+      interpretacion: 'Consulta interpretada',
+      operaciones: 'Operaciones',
+      resultados: 'Resultados',
+      interpretacion_emergencia: 'Interpretacion para emergencias',
+    };
+    if (uiState.blocksRendered[key]) return;
+    uiState.blocksRendered[key] = true;
+    const div = document.createElement('div');
+    div.className = 'chat-block';
+    div.innerHTML =
+      '<div class="chat-block-title">' + chatEscapeHtml(labels[key] || key) + '</div>' +
+      '<div class="chat-block-body">' + chatFormatText(content) + '</div>';
+    uiState.finalBlocks.appendChild(div);
+    // Limpiar el bloque "Generando..." la primera vez que llega un bloque final.
+    if (uiState.streamingBlock && !uiState.streamingBlock._cleared) {
+      uiState.streamingBlock._cleared = true;
+      uiState.streamingBlock.style.display = 'none';
     }
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
 
-    if (parts.length === 0) {
-      parts.push('<div class="chat-block-body">' + chatFormatText((reply && reply.text) || '(respuesta vacia)') + '</div>');
-    }
-
-    if (clientActions.length) {
-      const summary = clientActions.map(function (ca) {
-        return chatEscapeHtml(ca.action + '(' + JSON.stringify(ca.arguments) + ')');
-      }).join('<br>');
-      parts.push('<div class="chat-trace-entry">Aplicado al mapa:<br>' + summary + '</div>');
-    }
-
-    this.appendMessage('assistant', parts.join(''));
+  renderClientActionsSummary(uiState, actions) {
+    if (!actions.length) return;
+    uiState.clientActions.hidden = false;
+    const summary = actions.map(function (ca) {
+      return chatEscapeHtml(ca.action + '(' + JSON.stringify(ca.arguments) + ')');
+    }).join('<br>');
+    uiState.clientActions.className = 'chat-trace-entry';
+    uiState.clientActions.innerHTML = 'Aplicado al mapa:<br>' + summary;
   }
 
   executeClientActions(actions) {
@@ -235,8 +261,12 @@ class ChatClient {
     this.setSending(true);
     this.setStatus('Enviando...');
 
+    const uiState = this.startAssistantMessage();
+    const pendingClientActions = [];
+    const traceById = {};
+
     try {
-      const resp = await fetch('/api/chat', {
+      const resp = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({ messages: this.history }),
@@ -245,20 +275,100 @@ class ChatClient {
         const detail = await resp.text();
         throw new Error('HTTP ' + resp.status + ': ' + detail.slice(0, 200));
       }
-      const body = await resp.json();
-      const reply = body.reply || {};
-      this.renderAssistant(reply);
-      this.executeClientActions(reply.client_actions || []);
-      if (reply.text) {
-        this.history.push({ role: 'assistant', content: reply.text });
+      if (!resp.body) {
+        throw new Error('Respuesta sin body de stream.');
       }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      // Procesa una pieza SSE: bloques separados por linea en blanco doble.
+      const processChunk = (chunk) => {
+        const events = chunk.split(/\n\n/);
+        for (const ev of events) {
+          if (!ev.trim()) continue;
+          let evType = 'message';
+          let data = '';
+          for (const line of ev.split(/\n/)) {
+            if (line.startsWith('event:')) evType = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          let payload;
+          try { payload = JSON.parse(data); } catch (_) { continue; }
+          this.handleStreamEvent(evType, payload, uiState, pendingClientActions, traceById);
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Cada vez que tengamos al menos un evento completo (doble salto), procesar.
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const piece = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          processChunk(piece);
+        }
+      }
+      // flush final
+      if (buffer.trim()) processChunk(buffer);
+
       this.setStatus('');
+      // Ejecutar las acciones de cliente al final.
+      this.executeClientActions(pendingClientActions);
+      this.renderClientActionsSummary(uiState, pendingClientActions);
+      // Anadir al historial el texto final acumulado.
+      if (uiState.streamBuffer) {
+        this.history.push({ role: 'assistant', content: uiState.streamBuffer });
+      }
     } catch (err) {
       this.appendMessage('error', chatEscapeHtml('Error: ' + (err.message || err)));
       this.setStatus('Error en la peticion');
     } finally {
       this.setSending(false);
       this.inputEl.focus();
+    }
+  }
+
+  handleStreamEvent(evType, payload, uiState, pendingClientActions, traceById) {
+    if (evType === 'token') {
+      this.appendToken(uiState, payload.text || '');
+    } else if (evType === 'tool_call_start') {
+      const div = this.addTraceEntry(
+        uiState, payload.tool, payload.arguments, 'pending', '...'
+      );
+      if (payload.id) traceById[payload.id] = div;
+    } else if (evType === 'tool_call_done') {
+      const div = traceById[payload.id];
+      const status = payload.ok ? 'ok' : 'failed';
+      const summary = payload.ok ? (payload.result_summary || 'OK') : (payload.error || 'error');
+      if (div) {
+        div.classList.remove('failed');
+        if (!payload.ok) div.classList.add('failed');
+        const bodies = div.querySelectorAll('div');
+        if (bodies.length >= 2) bodies[1].textContent = summary;
+      } else {
+        this.addTraceEntry(uiState, payload.tool, {}, status, summary);
+      }
+    } else if (evType === 'client_action') {
+      pendingClientActions.push({
+        id: payload.id,
+        action: payload.action,
+        arguments: payload.arguments || {},
+      });
+    } else if (evType === 'final_block') {
+      this.renderFinalBlock(uiState, payload.key, payload.content);
+    } else if (evType === 'done') {
+      if (payload.truncated) {
+        this.appendMessage('system', 'Se alcanzo el tope de iteraciones del orquestador.');
+      }
+      // El bloque "Generando..." se oculta solo cuando llega un final_block.
+      // Si solo hay tokens sin bloques (caso de rechazo), lo dejamos visible
+      // pero con el texto streaming acumulado.
+    } else if (evType === 'error') {
+      this.appendMessage('error', chatEscapeHtml('Error del backend: ' + (payload.message || '')));
     }
   }
 }

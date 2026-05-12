@@ -24,7 +24,12 @@ from typing import Any
 
 import jsonschema
 
-from chat.llm_client import LLMClientError, chat_completion
+from chat.llm_client import (
+    LLMClientError,
+    accumulate_streamed_tool_calls,
+    chat_completion,
+    chat_completion_stream,
+)
 from chat.prompt import build_system_prompt
 from chat.schemas import (
     AssistantBlocks,
@@ -207,6 +212,24 @@ async def _execute_tool(tool_name: str, args: dict[str, Any]) -> tuple[bool, Any
         return False, None, f"tool_error al ejecutar '{tool_name}': {exc}"
 
 
+def _safe_args_for_history(raw: str | None) -> str:
+    """Garantiza que `arguments` en assistant.tool_calls sea JSON valido.
+
+    Si el modelo emite args troceados durante el stream y la concatenacion
+    resulta en JSON malformado, inyectar esa cadena tal cual en el historial
+    hace que el siguiente request al LLM devuelva 400 (vLLM parsea
+    arguments con json.loads). Reemplazamos por '{}' en ese caso; el
+    tool_error correspondiente ya se enviara como rol=tool al modelo.
+    """
+    if not raw:
+        return "{}"
+    try:
+        json.loads(raw)
+        return raw
+    except json.JSONDecodeError:
+        return "{}"
+
+
 # ----------------------------- Bucle principal -----------------------------
 
 
@@ -285,15 +308,27 @@ async def run_chat(
         # Agregar el mensaje del asistente al historial.
         # Si vienen estructurados, los pasamos tal cual. Si vienen de Hermes,
         # los serializamos como tool_calls estructurados para que el LLM siga el contrato.
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
+        # Convencion OpenAI: content=null cuando hay tool_calls (evita que
+        # marcadores internos del modelo en `content` rompan la siguiente request).
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": None}
         if message.get("tool_calls"):
-            assistant_msg["tool_calls"] = message["tool_calls"]
+            # Sanitizar function.arguments por si el modelo entrego JSON malformado.
+            assistant_msg["tool_calls"] = [
+                {
+                    **tc,
+                    "function": {
+                        **(tc.get("function") or {}),
+                        "arguments": _safe_args_for_history((tc.get("function") or {}).get("arguments")),
+                    },
+                }
+                for tc in message["tool_calls"]
+            ]
         else:
             assistant_msg["tool_calls"] = [
                 {
                     "id": call["id"],
                     "type": "function",
-                    "function": {"name": call["name"], "arguments": call["arguments_raw"]},
+                    "function": {"name": call["name"], "arguments": _safe_args_for_history(call["arguments_raw"])},
                 }
                 for call in tool_calls
             ]
@@ -365,3 +400,149 @@ async def run_chat(
         iterations=iterations,
         truncated=truncated,
     )
+
+
+# ----------------------------- Bucle con streaming -----------------------------
+
+
+def _make_event(event_type: str, **payload: Any) -> dict[str, Any]:
+    return {"type": event_type, **payload}
+
+
+async def run_chat_stream(
+    *,
+    user_messages: list[ChatMessage],
+    config: OrchestratorConfig,
+):
+    """Variante por stream del bucle: emite eventos a medida que progresa.
+
+    Diseno: la llamada al LLM se hace en modo NO-streaming dentro del
+    orquestador, pero el endpoint /api/chat/stream emite eventos SSE a
+    medida que el orquestador procesa cada iteracion. Esto se debe a un
+    bug confirmado de vLLM/Gemma donde los `tool_call.arguments` con
+    numeros negativos llegan corruptos en chunks token-a-token (ej.
+    `["--9.03,...` con doble `-`). Priorizar fiabilidad sobre tokens
+    incrementales: el usuario ve los tool_call_start/done y los bloques
+    aparecer progresivamente; el texto final llega bloque a bloque, no
+    caracter a caracter.
+
+    Eventos emitidos (clave `type` del dict):
+      - `tool_call_start` {id, tool, arguments}: tool detectada para invocar.
+      - `tool_call_done` {id, tool, result_summary, ok, error?}: tool ejecutada
+        (server-side) o queued (client-side).
+      - `client_action` {id, action, arguments}: accion para el frontend.
+      - `final_block` {key, content}: bloque del formato de respuesta final.
+      - `done` {iterations, truncated}: cierre del stream.
+      - `error` {message}: error fatal (la stream termina).
+    """
+    history: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt()}]
+    for m in user_messages:
+        history.append({"role": m.role, "content": m.content})
+
+    tools_spec = get_openai_tool_specs()
+    client_actions_count = 0
+    iterations = 0
+    truncated = False
+
+    while iterations < config.max_iterations:
+        iterations += 1
+
+        try:
+            payload = await chat_completion(
+                messages=history,
+                api_url=config.api_url,
+                api_key=config.api_key,
+                model=config.model,
+                tools=tools_spec,
+                timeout=config.timeout,
+            )
+        except LLMClientError as exc:
+            yield _make_event("error", message=str(exc))
+            return
+
+        choices = payload.get("choices") or []
+        if not choices:
+            yield _make_event("done", iterations=iterations, truncated=False)
+            return
+        message = choices[0].get("message") or {}
+        tool_calls = _coerce_tool_calls(message)
+
+        if not tool_calls:
+            final_text = (message.get("content") or "").strip()
+            blocks = parse_blocks(final_text)
+            for key in ("interpretacion", "operaciones", "resultados", "interpretacion_emergencia"):
+                value = getattr(blocks, key)
+                if value:
+                    yield _make_event("final_block", key=key, content=value)
+            yield _make_event("done", iterations=iterations, truncated=False)
+            return
+
+        # Anadir el mensaje assistant con tool_calls al historial.
+        # Convencion OpenAI estricta: cuando hay tool_calls, content=null.
+        # Si dejamos accumulated_content (que puede llevar marcadores tipo
+        # `<|channel>thought<channel|>` de Gemma), algunos servidores (vLLM)
+        # devuelven 400 al reparsear la conversacion en la siguiente
+        # iteracion. Sanitizamos tambien arguments por si llegaron troceados.
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": None}
+        assistant_msg["tool_calls"] = [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": call["name"], "arguments": _safe_args_for_history(call["arguments_raw"])},
+            }
+            for call in tool_calls
+        ]
+        history.append(assistant_msg)
+
+        for call in tool_calls:
+            tool_name = call["name"]
+            try:
+                args = json.loads(call["arguments_raw"]) if call["arguments_raw"] else {}
+            except json.JSONDecodeError as exc:
+                err = f"tool_error: JSON de argumentos invalido para '{tool_name}': {exc}"
+                yield _make_event("tool_call_done", id=call["id"], tool=tool_name, ok=False, error=err)
+                history.append({"role": "tool", "tool_call_id": call["id"], "content": err})
+                continue
+
+            yield _make_event("tool_call_start", id=call["id"], tool=tool_name, arguments=args if isinstance(args, dict) else {})
+
+            ok, err = _validate_args(tool_name, args)
+            if not ok:
+                yield _make_event("tool_call_done", id=call["id"], tool=tool_name, ok=False, error=err)
+                history.append({"role": "tool", "tool_call_id": call["id"], "content": err})
+                continue
+
+            if is_client_tool(tool_name):
+                client_actions_count += 1
+                action_id = f"ca-{client_actions_count}"
+                yield _make_event("client_action", id=action_id, action=tool_name, arguments=args)
+                yield _make_event(
+                    "tool_call_done",
+                    id=call["id"], tool=tool_name, ok=True,
+                    result_summary=f"client_action queued (id={action_id})",
+                )
+                observation = json.dumps({"status": "queued", "id": action_id}, ensure_ascii=False)
+                history.append({"role": "tool", "tool_call_id": call["id"], "content": observation})
+                continue
+
+            exec_ok, result, exec_err = await _execute_tool(tool_name, args)
+            if not exec_ok:
+                yield _make_event("tool_call_done", id=call["id"], tool=tool_name, ok=False, error=exec_err)
+                history.append({"role": "tool", "tool_call_id": call["id"], "content": exec_err})
+                continue
+
+            yield _make_event(
+                "tool_call_done",
+                id=call["id"], tool=tool_name, ok=True,
+                result_summary=_summarize_result(result),
+            )
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": json.dumps(result, ensure_ascii=False, default=str),
+                }
+            )
+
+    truncated = True
+    yield _make_event("done", iterations=iterations, truncated=truncated)

@@ -682,3 +682,11 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
   font-size: 11px; color: #6f86a6;
   padding: 4px 12px 8px; min-height: 14px;
 }
+
+/* Streaming: bloque temporal de "Generando..." mientras llegan tokens */
+.chat-block-streaming .chat-block-title { color: #6f86a6; font-style: italic; }
+.chat-block-streaming .chat-block-body {
+  white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace;
+  color: #c0c6d4; opacity: 0.9; font-size: 12px;
+}
+.chat-trace-entry div:first-child { word-break: break-all; }
