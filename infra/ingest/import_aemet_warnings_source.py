@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--date-from", default=None, help="Primer día válido. Si se omite junto a --date-to, se procesa ayer.")
     parser.add_argument("--date-to", default=None, help="Último día válido. Si se omite junto a --date-from, se procesa ayer.")
     parser.add_argument("--elaboration-lookback-days", type=int, default=3)
+    parser.add_argument(
+        "--force-reimport",
+        action="store_true",
+        help="Borra e inserta de nuevo bloques ya importados aunque el archivo fuente no haya cambiado.",
+    )
     parser.add_argument("--skip-hash-check", action="store_true")
     return parser.parse_args()
 
@@ -324,6 +329,174 @@ def verify_file_hash(path: Path, expected_sha256: str) -> None:
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected_sha256:
         raise ValueError(f"Hash inesperado para {path}: {actual} != {expected_sha256}")
+
+
+def find_unchanged_imported_download(conn: psycopg.Connection, manifest: dict) -> tuple[int, int, int] | None:
+    sql = """
+        SELECT
+            d.source_download_id,
+            d.xml_member_count,
+            d.filtered_record_count,
+            count(r.source_record_id)::integer AS source_record_count
+        FROM source.aemet_warning_download_file AS d
+        LEFT JOIN source.aemet_warning_cap_record AS r
+            ON r.source_download_id = d.source_download_id
+        WHERE d.source_file_path = %s
+          AND d.source_file_sha256 = %s
+          AND d.response_size_bytes = %s
+          AND d.request_elaboration_from = %s::timestamptz
+          AND d.request_elaboration_to = %s::timestamptz
+        GROUP BY d.source_download_id, d.xml_member_count, d.filtered_record_count
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (
+                manifest["source_file_path"],
+                manifest["source_file_sha256"],
+                manifest["response_size_bytes"],
+                manifest["request_elaboration_from"],
+                manifest["request_elaboration_to"],
+            ),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+
+    source_download_id, xml_member_count, filtered_record_count, source_record_count = row
+    if int(filtered_record_count) != int(source_record_count):
+        return None
+    return int(source_download_id), int(xml_member_count), int(filtered_record_count)
+
+
+def ensure_refresh_queue_tables(conn: psycopg.Connection) -> None:
+    sql = """
+        CREATE TABLE IF NOT EXISTS ingest.aemet_warning_refresh_key (
+            cap_identifier text NOT NULL,
+            language text NOT NULL,
+            area_code text NOT NULL,
+            queued_at timestamptz NOT NULL DEFAULT now(),
+            reason text NOT NULL DEFAULT 'import',
+            metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+            PRIMARY KEY (cap_identifier, language, area_code)
+        );
+
+        CREATE INDEX IF NOT EXISTS aemet_warning_refresh_key_queued_at_idx
+            ON ingest.aemet_warning_refresh_key (queued_at);
+
+        CREATE TABLE IF NOT EXISTS ingest.aemet_warning_refresh_date (
+            valid_date date PRIMARY KEY,
+            queued_at timestamptz NOT NULL DEFAULT now(),
+            reason text NOT NULL DEFAULT 'core-refresh',
+            metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb
+        );
+
+        CREATE INDEX IF NOT EXISTS aemet_warning_refresh_date_queued_at_idx
+            ON ingest.aemet_warning_refresh_date (queued_at);
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
+def queue_existing_refresh_scope(conn: psycopg.Connection, conninfo: str, source_download_id: int) -> None:
+    if not relation_exists(conninfo, "core.aemet_max_temperature_warning"):
+        return
+
+    key_sql = """
+        INSERT INTO ingest.aemet_warning_refresh_key (
+            cap_identifier,
+            language,
+            area_code,
+            reason,
+            metadata_json
+        )
+        SELECT DISTINCT
+            src.cap_identifier,
+            src.language,
+            src.area_code,
+            'source-reimport-old',
+            jsonb_build_object('source_download_id', src.source_download_id)
+        FROM source.aemet_warning_cap_record AS src
+        WHERE src.source_download_id = %s
+          AND src.phenomenon_code = 'AT'
+          AND src.language = 'es-ES'
+          AND src.area_code IS NOT NULL
+        ON CONFLICT (cap_identifier, language, area_code) DO UPDATE
+        SET
+            queued_at = now(),
+            reason = EXCLUDED.reason,
+            metadata_json = ingest.aemet_warning_refresh_key.metadata_json || EXCLUDED.metadata_json;
+    """
+
+    date_sql = """
+        INSERT INTO ingest.aemet_warning_refresh_date (
+            valid_date,
+            reason,
+            metadata_json
+        )
+        SELECT DISTINCT
+            gs.valid_date::date,
+            'source-reimport-old-core',
+            jsonb_build_object('source_download_id', %s)
+        FROM core.aemet_max_temperature_warning AS w
+        CROSS JOIN LATERAL generate_series(
+            (w.onset_at AT TIME ZONE 'Europe/Madrid')::date,
+            greatest(
+                (w.onset_at AT TIME ZONE 'Europe/Madrid')::date,
+                ((w.expires_at - interval '1 second') AT TIME ZONE 'Europe/Madrid')::date
+            ),
+            interval '1 day'
+        ) AS gs(valid_date)
+        WHERE w.representative_source_record_id IN (
+            SELECT source_record_id
+            FROM source.aemet_warning_cap_record
+            WHERE source_download_id = %s
+        )
+        ON CONFLICT (valid_date) DO UPDATE
+        SET
+            queued_at = now(),
+            reason = EXCLUDED.reason,
+            metadata_json = ingest.aemet_warning_refresh_date.metadata_json || EXCLUDED.metadata_json;
+    """
+    with conn.cursor() as cur:
+        cur.execute(key_sql, (source_download_id,))
+        cur.execute(date_sql, (source_download_id, source_download_id))
+
+
+def queue_download_refresh_keys(conn: psycopg.Connection, source_download_id: int, reason: str) -> int:
+    sql = """
+        WITH queued AS (
+            INSERT INTO ingest.aemet_warning_refresh_key (
+                cap_identifier,
+                language,
+                area_code,
+                reason,
+                metadata_json
+            )
+            SELECT DISTINCT
+                cap_identifier,
+                language,
+                area_code,
+                %s,
+                jsonb_build_object('source_download_id', source_download_id)
+            FROM source.aemet_warning_cap_record
+            WHERE source_download_id = %s
+              AND phenomenon_code = 'AT'
+              AND language = 'es-ES'
+              AND area_code IS NOT NULL
+            ON CONFLICT (cap_identifier, language, area_code) DO UPDATE
+            SET
+                queued_at = now(),
+                reason = EXCLUDED.reason,
+                metadata_json = ingest.aemet_warning_refresh_key.metadata_json || EXCLUDED.metadata_json
+            RETURNING 1
+        )
+        SELECT count(*)::integer FROM queued
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (reason, source_download_id))
+        row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 @lru_cache(maxsize=1)
@@ -680,6 +853,8 @@ def main() -> int:
     imported_files = 0
     imported_xml_members = 0
     imported_records = 0
+    queued_refresh_keys = 0
+    skipped_files = 0
     failed = 0
 
     window_label = "ventana diaria automática" if automatic_daily_window else "rango explícito"
@@ -688,6 +863,7 @@ def main() -> int:
         f"({date_from.isoformat()} a {date_to.isoformat()}, {window_label})"
     )
     with psycopg.connect(conninfo) as conn:
+        ensure_refresh_queue_tables(conn)
         for manifest_path, manifest in manifests:
             archive_path = repo_dir / manifest["source_file_path"]
             if not archive_path.is_file():
@@ -695,24 +871,38 @@ def main() -> int:
                 failed += 1
                 continue
 
+            rel_manifest_path = relative_path(manifest_path, repo_dir)
+            if not args.force_reimport:
+                unchanged = find_unchanged_imported_download(conn, manifest)
+                if unchanged is not None:
+                    source_download_id, xml_member_count, record_count = unchanged
+                    skipped_files += 1
+                    print(
+                        f"- {rel_manifest_path}: download_id={source_download_id}, "
+                        f"skipped sin cambios, xml={xml_member_count}, AT_records={record_count}"
+                    )
+                    continue
+
             ingest_id = create_ingest_record(conn, manifest["source_file_path"], manifest)
             try:
                 if not args.skip_hash_check:
                     verify_file_hash(archive_path, manifest["source_file_sha256"])
                 xml_member_count, records = parse_archive_records(archive_path)
                 source_download_id = upsert_download_row(conn, ingest_id, manifest, xml_member_count, len(records))
+                queue_existing_refresh_scope(conn, conninfo, source_download_id)
                 clear_existing_records(conn, conninfo, source_download_id)
                 inserted = insert_record_rows(conn, source_download_id, records)
+                queued = queue_download_refresh_keys(conn, source_download_id, "source-import")
                 mark_ingest_status(conn, ingest_id, "ok")
                 conn.commit()
 
                 imported_files += 1
                 imported_xml_members += xml_member_count
                 imported_records += inserted
-                rel_manifest_path = relative_path(manifest_path, repo_dir)
+                queued_refresh_keys += queued
                 print(
                     f"- {rel_manifest_path}: download_id={source_download_id}, "
-                    f"xml={xml_member_count}, AT_records={inserted}"
+                    f"xml={xml_member_count}, AT_records={inserted}, queued_keys={queued}"
                 )
             except Exception as exc:
                 conn.rollback()
@@ -724,7 +914,9 @@ def main() -> int:
 
     print(
         "Resumen importación AEMET: "
-        f"files={imported_files}, xml_members={imported_xml_members}, records={imported_records}, failed={failed}"
+        f"files={imported_files}, skipped={skipped_files}, "
+        f"xml_members={imported_xml_members}, records={imported_records}, "
+        f"queued_keys={queued_refresh_keys}, failed={failed}"
     )
     return 0 if failed == 0 else 2
 

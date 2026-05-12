@@ -68,13 +68,13 @@ $Definitions = @(
         Name = "AEMET calor 03 refresh core"
         Step = "refresh-core"
         Offset = 2
-        Description = "Reconstruye core.aemet_max_temperature_warning desde source."
+        Description = "Actualiza incrementalmente core.aemet_max_temperature_warning desde source."
     },
     [pscustomobject]@{
         Name = "AEMET calor 04 refresh pub"
         Step = "refresh-pub"
         Offset = 3
-        Description = "Refresca pub.aemet_max_temperature_daily_feature para GeoJSON y MVT."
+        Description = "Actualiza incrementalmente pub.aemet_max_temperature_daily_feature para GeoJSON y MVT."
     },
     [pscustomobject]@{
         Name = "AEMET calor 05 publica estadisticas"

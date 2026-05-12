@@ -80,6 +80,23 @@ CREATE TABLE IF NOT EXISTS source.aemet_warning_cap_record (
     UNIQUE (source_download_id, source_member_path, language, area_code)
 );
 
+CREATE TABLE IF NOT EXISTS ingest.aemet_warning_refresh_key (
+    cap_identifier text NOT NULL,
+    language text NOT NULL,
+    area_code text NOT NULL,
+    queued_at timestamptz NOT NULL DEFAULT now(),
+    reason text NOT NULL DEFAULT 'import',
+    metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (cap_identifier, language, area_code)
+);
+
+CREATE TABLE IF NOT EXISTS ingest.aemet_warning_refresh_date (
+    valid_date date PRIMARY KEY,
+    queued_at timestamptz NOT NULL DEFAULT now(),
+    reason text NOT NULL DEFAULT 'core-refresh',
+    metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
 CREATE INDEX IF NOT EXISTS aemet_warning_download_request_from_idx
     ON source.aemet_warning_download_file (request_elaboration_from);
 CREATE INDEX IF NOT EXISTS aemet_warning_download_request_to_idx
@@ -87,6 +104,8 @@ CREATE INDEX IF NOT EXISTS aemet_warning_download_request_to_idx
 CREATE INDEX IF NOT EXISTS aemet_warning_download_ingest_id_idx
     ON source.aemet_warning_download_file (ingest_id);
 
+CREATE INDEX IF NOT EXISTS aemet_warning_cap_record_source_download_id_idx
+    ON source.aemet_warning_cap_record (source_download_id);
 CREATE INDEX IF NOT EXISTS aemet_warning_cap_record_identifier_idx
     ON source.aemet_warning_cap_record (cap_identifier);
 CREATE INDEX IF NOT EXISTS aemet_warning_cap_record_sent_at_idx
@@ -103,9 +122,15 @@ CREATE INDEX IF NOT EXISTS aemet_warning_cap_record_area_code_idx
     ON source.aemet_warning_cap_record (area_code);
 CREATE INDEX IF NOT EXISTS aemet_warning_cap_record_geom_gix
     ON source.aemet_warning_cap_record USING GIST (geom);
+CREATE INDEX IF NOT EXISTS aemet_warning_refresh_key_queued_at_idx
+    ON ingest.aemet_warning_refresh_key (queued_at);
+CREATE INDEX IF NOT EXISTS aemet_warning_refresh_date_queued_at_idx
+    ON ingest.aemet_warning_refresh_date (queued_at);
 
 COMMENT ON TABLE source.aemet_warning_download_file IS 'Ficheros tar del archivo histórico de avisos CAP de AEMET descargados por rango de elaboración.';
 COMMENT ON TABLE source.aemet_warning_cap_record IS 'Registros CAP filtrados a temperaturas máximas, cercanos al origen y con geometría de zona AEMET en EPSG:4326.';
+COMMENT ON TABLE ingest.aemet_warning_refresh_key IS 'Cola de claves CAP/zona pendientes de recanonizar de source a core.';
+COMMENT ON TABLE ingest.aemet_warning_refresh_date IS 'Cola de fechas válidas pendientes de republicar en pub.aemet_max_temperature_daily_feature.';
 COMMENT ON COLUMN source.aemet_warning_download_file.request_elaboration_from IS 'Inicio UTC del rango de fecha/hora de elaboración solicitado al endpoint de archivo AEMET.';
 COMMENT ON COLUMN source.aemet_warning_download_file.request_elaboration_to IS 'Fin UTC del rango de fecha/hora de elaboración solicitado al endpoint de archivo AEMET.';
 COMMENT ON COLUMN source.aemet_warning_cap_record.event_code IS 'Código y etiqueta original del fenómeno, por ejemplo AT;Temperaturas máximas.';
