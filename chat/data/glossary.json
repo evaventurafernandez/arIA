@@ -1,0 +1,72 @@
+{
+  "FRP": {
+    "name": "FRP",
+    "long_name": "Fire Radiative Power",
+    "unit": "MW",
+    "description": "Potencia radiativa emitida por un foco activo, medida por sensores satelitales (VIIRS, MODIS). Se interpreta como proxy de intensidad del frente.",
+    "context_meteovisor": "El visor categoriza el FRP en cuatro tramos visuales (Bajo < 10 MW, Medio 10-50 MW, Alto 50-200 MW, Muy alto > 200 MW). No son umbrales oficiales de NASA, son rangos del prototipo. El FRP por si solo no clasifica un incendio como peligroso: hay que combinarlo con uso del suelo, viento, sequia y proximidad a nucleos."
+  },
+  "FWI": {
+    "name": "FWI",
+    "long_name": "Fire Weather Index",
+    "unit": "indice adimensional",
+    "description": "Indice canadiense de peligro meteorologico de incendio. Combina temperatura, humedad, viento y precipitacion para estimar la facilidad con la que un incendio puede iniciarse y propagarse.",
+    "context_meteovisor": "Se sirve como capa WMS diaria desde EFFIS (`mf010.fwi`). Es un indicador de peligro meteorologico, no de actividad detectada. Se actualiza a diario."
+  },
+  "DC": {
+    "name": "DC",
+    "long_name": "Drought Code",
+    "unit": "indice adimensional",
+    "description": "Componente del sistema canadiense FWI que estima la sequedad profunda del combustible (capas organicas inferiores del suelo). Valores altos indican condiciones para incendios persistentes y dificiles de extinguir.",
+    "context_meteovisor": "Se sirve como capa WMS diaria desde EFFIS (`mf010.dc`). Acompaña al FWI; cuando DC y FWI son altos a la vez el riesgo se considera maximo."
+  },
+  "T10": {
+    "name": "T=10",
+    "long_name": "Periodo de retorno 10 años (inundacion fluvial)",
+    "unit": "años",
+    "description": "Umbral hidrologico: zona susceptible de inundarse por desbordamiento fluvial al menos una vez cada 10 años en promedio. Cartografia del SNCZI (Sistema Nacional de Cartografia de Zonas Inundables) gestionado por MITECO.",
+    "context_meteovisor": "Capa WMS estatica `NZ.Flood.FluvialT10` servida desde IDEE. No depende de meteorologia del dia; es informacion estructural del territorio."
+  },
+  "CAP": {
+    "name": "CAP",
+    "long_name": "Common Alerting Protocol",
+    "unit": null,
+    "description": "Estandar OASIS para emitir avisos de emergencia (meteorologicos, sismicos, etc.). AEMET publica sus avisos en formato CAP XML.",
+    "context_meteovisor": "Los avisos de la AEMET se ingieren del feed CAP de opendata.aemet.es. Cada aviso contiene fenomeno descriptivo, nivel (Verde/Amarillo/Naranja/Rojo), poligono de zona y vigencia (onset/expires)."
+  },
+  "VIIRS": {
+    "name": "VIIRS",
+    "long_name": "Visible Infrared Imaging Radiometer Suite",
+    "unit": null,
+    "description": "Instrumento radiometrico embarcado en los satelites NOAA-20, NOAA-21 y Suomi NPP. Detecta anomalias termicas (focos activos) con resolucion de 375 m.",
+    "context_meteovisor": "El visor consume los productos VIIRS_NOAA20_SP, VIIRS_NOAA21_SP y VIIRS_SNPP_SP de NASA FIRMS, filtrados a confianza nominal o alta. Los datos llegan en pasadas (no son continuos)."
+  },
+  "FIRMS": {
+    "name": "FIRMS",
+    "long_name": "Fire Information for Resource Management System",
+    "unit": null,
+    "description": "Servicio de la NASA que publica detecciones de focos activos desde sensores satelitales (VIIRS, MODIS) con baja latencia (3 horas tipicamente).",
+    "context_meteovisor": "El visor consulta FIRMS en vivo cada vez que se invoca `queryFires`, y persiste un historico diario en `core.firms_hotspot` para mayo-agosto 2025."
+  },
+  "Burnt Area v4": {
+    "name": "Burnt Area v4",
+    "long_name": "Copernicus CLMS Burnt Area, version 4",
+    "unit": null,
+    "description": "Producto Copernicus Land Monitoring Service que mapea diariamente las areas quemadas detectadas en Europa con resolucion de 250 m. Version 4 cubre desde 2017 hasta la actualidad.",
+    "context_meteovisor": "El visor sirve teselas PNG diarias y estadisticas por dia a escala pais (`pub.burnt_area_daily_stat`). Cobertura cargada: mayo-agosto 2025. No hay geometrias vectoriales pixel a pixel en PostGIS."
+  },
+  "CORINE": {
+    "name": "CORINE Land Cover",
+    "long_name": "Coordination of Information on the Environment - Land Cover 2018",
+    "unit": null,
+    "description": "Inventario europeo de ocupacion del suelo en 44 clases jerarquicas, actualizado cada 6 años. La version 2018 es la mas reciente.",
+    "context_meteovisor": "El visor lo sirve de dos formas: como vector tiles MVT desde PostGIS (`pub.landcover_mvt_source`) para representacion en mapa, y como consulta puntual via WMS GetFeatureInfo del IGN para coherencia visual con la capa que ve el usuario."
+  },
+  "AEMET": {
+    "name": "AEMET",
+    "long_name": "Agencia Estatal de Meteorologia",
+    "unit": null,
+    "description": "Organismo publico español responsable de la meteorologia oficial: prediccion, observacion, climatologia y emision de avisos meteorologicos adversos.",
+    "context_meteovisor": "El visor consume el feed CAP de avisos vigentes de AEMET y, en histórico, mantiene los avisos por temperaturas maximas de mayo-agosto 2025."
+  }
+}
