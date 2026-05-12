@@ -31,6 +31,7 @@ from chat.llm_client import (
     chat_completion_stream,
 )
 from chat.prompt import build_system_prompt
+from chat.sanitize import sanitize_user_content
 from chat.schemas import (
     AssistantBlocks,
     ChatMessage,
@@ -64,12 +65,30 @@ class OrchestratorConfig:
         model: str,
         max_iterations: int,
         timeout: float,
+        max_user_message_length: int = 4000,
     ) -> None:
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
         self.max_iterations = max_iterations
         self.timeout = timeout
+        self.max_user_message_length = max_user_message_length
+
+
+def _build_history(
+    user_messages: list[ChatMessage],
+    *,
+    max_user_message_length: int,
+) -> list[dict[str, Any]]:
+    """System prompt + mensajes sanitizados (solo los de rol user)."""
+    history: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt()}]
+    for m in user_messages:
+        if m.role == "user":
+            content = sanitize_user_content(m.content, max_length=max_user_message_length)
+        else:
+            content = m.content
+        history.append({"role": m.role, "content": content})
+    return history
 
 
 # ---------------------------- Parser de bloques ----------------------------
@@ -268,9 +287,7 @@ async def run_chat(
     config: OrchestratorConfig,
 ) -> ChatReply:
     """Ejecuta el bucle del chat y devuelve la respuesta estructurada."""
-    history: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt()}]
-    for m in user_messages:
-        history.append({"role": m.role, "content": m.content})
+    history = _build_history(user_messages, max_user_message_length=config.max_user_message_length)
 
     tools_spec = get_openai_tool_specs()
     trace: list[TraceEntry] = []
@@ -435,9 +452,7 @@ async def run_chat_stream(
       - `done` {iterations, truncated}: cierre del stream.
       - `error` {message}: error fatal (la stream termina).
     """
-    history: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt()}]
-    for m in user_messages:
-        history.append({"role": m.role, "content": m.content})
+    history = _build_history(user_messages, max_user_message_length=config.max_user_message_length)
 
     tools_spec = get_openai_tool_specs()
     client_actions_count = 0

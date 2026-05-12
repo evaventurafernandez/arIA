@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_max_tool_iterations: int = 8
     llm_request_timeout: float = 120.0
+    # Chat LLM (Fase 6: endurecimiento)
+    chat_rate_limit: str = "30/minute"
+    chat_max_user_message_length: int = 4000
     class Config:
         env_file = ".env"
 
@@ -3106,9 +3109,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MeteoVisor Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Chat LLM (Fase 0)
-from chat.router import router as chat_router  # noqa: E402
-app.include_router(chat_router)
+# Chat LLM (Fase 0+6)
+from chat.router import attach_chat_to  # noqa: E402
+attach_chat_to(app)
 
 
 # Endpoints

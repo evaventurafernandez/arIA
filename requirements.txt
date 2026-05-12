@@ -11,6 +11,8 @@ psycopg-pool
 boto3
 # Chat LLM (Fase 1)
 jsonschema
+# Chat LLM (Fase 6: rate limit)
+slowapi
 # Tests del chat LLM
 pytest
 pytest-asyncio
