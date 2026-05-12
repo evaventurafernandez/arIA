@@ -9,6 +9,8 @@ pyproj
 psycopg[binary]
 psycopg-pool
 boto3
+# Chat LLM (Fase 1)
+jsonschema
 # Tests del chat LLM
 pytest
 pytest-asyncio

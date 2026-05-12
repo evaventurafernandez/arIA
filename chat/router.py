@@ -1,10 +1,16 @@
-"""Router FastAPI del chat. En Fase 0 solo expone POST /api/chat sin tools."""
+"""Router FastAPI del chat.
+
+En Fase 1 el endpoint `POST /api/chat` delega en el orquestador, que ya
+gestiona las tools server-side y devuelve la respuesta estructurada en
+los cuatro bloques.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from chat.llm_client import LLMClientError, chat_completion, extract_assistant_text
+from chat.llm_client import LLMClientError
+from chat.orchestrator import OrchestratorConfig, run_chat
 from chat.schemas import ChatRequest, ChatResponse
 
 
@@ -12,9 +18,19 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 def _settings():
-    # Import diferido: evita ciclo de importación con main.py en arranque.
+    # Import diferido: evita ciclo de importacion con main.py en arranque.
     from main import settings
     return settings
+
+
+def _build_config(settings) -> OrchestratorConfig:
+    return OrchestratorConfig(
+        api_url=settings.llm_api_url,
+        api_key=settings.llm_api_key or None,
+        model=settings.llm_model,
+        max_iterations=int(settings.llm_max_tool_iterations),
+        timeout=float(settings.llm_request_timeout),
+    )
 
 
 @router.post("", response_model=ChatResponse)
@@ -24,22 +40,18 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if not settings.llm_api_url or not settings.llm_model:
         raise HTTPException(
             status_code=503,
-            detail="El chat LLM no está configurado (falta LLM_API_URL o LLM_MODEL).",
+            detail="El chat LLM no esta configurado (falta LLM_API_URL o LLM_MODEL).",
         )
 
-    messages = [m.model_dump() for m in request.messages]
-    if not messages:
-        raise HTTPException(status_code=400, detail="messages no puede estar vacío")
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="messages no puede estar vacio")
 
     try:
-        payload = await chat_completion(
-            messages=messages,
-            api_url=settings.llm_api_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-            timeout=settings.llm_request_timeout,
+        reply = await run_chat(
+            user_messages=request.messages,
+            config=_build_config(settings),
         )
     except LLMClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return ChatResponse(session_id=request.session_id, reply=extract_assistant_text(payload))
+    return ChatResponse(session_id=request.session_id, reply=reply)
