@@ -23,14 +23,17 @@ async def chat_completion(
     *,
     messages: list[dict[str, Any]],
     api_url: str,
-    api_key: str,
+    api_key: str | None,
     model: str,
     tools: list[dict[str, Any]] | None = None,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
     """Llama al endpoint OpenAI-compatible y devuelve el JSON crudo.
 
-    Lanza `LLMClientError` si la respuesta no es 2xx o el cuerpo no es JSON.
+    `api_key` puede ser None o cadena vacía para servidores abiertos (vLLM
+    interno, Ollama sin token, etc.); en ese caso no se envía cabecera
+    Authorization. Lanza `LLMClientError` si la respuesta no es 2xx o el
+    cuerpo no es JSON.
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -40,10 +43,9 @@ async def chat_completion(
     if tools:
         payload["tools"] = tools
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

@@ -43,6 +43,44 @@ async def test_sends_bearer_and_model_and_returns_payload():
 
 
 @pytest.mark.asyncio
+async def test_no_auth_header_when_api_key_empty():
+    """Servidores abiertos (vLLM local, Ollama sin token) no requieren Authorization."""
+    with respx.mock() as router:
+        route = router.post(URL).respond(
+            status_code=200,
+            json={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        )
+
+        await chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            api_url=URL,
+            api_key="",
+            model=MODEL,
+        )
+
+        sent = route.calls.last.request
+        assert "Authorization" not in sent.headers
+
+
+@pytest.mark.asyncio
+async def test_no_auth_header_when_api_key_none():
+    with respx.mock() as router:
+        route = router.post(URL).respond(
+            status_code=200,
+            json={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        )
+
+        await chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            api_url=URL,
+            api_key=None,
+            model=MODEL,
+        )
+
+        assert "Authorization" not in route.calls.last.request.headers
+
+
+@pytest.mark.asyncio
 async def test_tools_param_is_forwarded_when_provided():
     """El contrato debe soportar tools desde Fase 0 (aunque no se use)."""
     with respx.mock() as router:

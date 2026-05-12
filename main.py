@@ -59,10 +59,10 @@ class Settings(BaseSettings):
     cdse_s3_access_key: str = ""
     cdse_s3_secret_key: str = ""
     cdse_s3_endpoint: str = "eodata.dataspace.copernicus.eu"
-    # Chat LLM (Fase 0)
+    # Chat LLM (Fase 0). Todos paramétricos vía .env.
     llm_api_url: str = ""
-    llm_api_key: str = ""
-    llm_model: str = "qwen3.6:35b-a3b"
+    llm_api_key: str = ""  # opcional: servidor abierto si está vacío
+    llm_model: str = ""
     llm_max_tool_iterations: int = 8
     llm_request_timeout: float = 120.0
     class Config:

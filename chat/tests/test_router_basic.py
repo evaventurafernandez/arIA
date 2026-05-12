@@ -31,10 +31,10 @@ async def test_post_chat_rejects_empty_messages(api_client):
 
 
 @pytest.mark.asyncio
-async def test_post_chat_returns_503_when_not_configured(api_client, monkeypatch):
+async def test_post_chat_returns_503_when_url_missing(api_client, monkeypatch):
     from main import settings
 
-    monkeypatch.setattr(settings, "llm_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "llm_api_url", "", raising=False)
 
     response = await api_client.post(
         "/api/chat",
@@ -42,6 +42,27 @@ async def test_post_chat_returns_503_when_not_configured(api_client, monkeypatch
     )
 
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_post_chat_works_without_api_key(api_client, respx_llm, monkeypatch):
+    """Servidores abiertos (vLLM interno, Ollama sin token) deben funcionar sin LLM_API_KEY."""
+    from main import settings
+
+    monkeypatch.setattr(settings, "llm_api_key", "", raising=False)
+    route = respx_llm.post(LLM_API_URL).respond(
+        status_code=200,
+        json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+    )
+
+    response = await api_client.post(
+        "/api/chat",
+        json={"messages": [{"role": "user", "content": "hola"}]},
+    )
+
+    assert response.status_code == 200
+    sent = route.calls.last.request
+    assert "Authorization" not in sent.headers
 
 
 @pytest.mark.asyncio

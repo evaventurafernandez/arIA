@@ -21,10 +21,10 @@ def _settings():
 async def chat(request: ChatRequest) -> ChatResponse:
     settings = _settings()
 
-    if not settings.llm_api_url or not settings.llm_api_key:
+    if not settings.llm_api_url or not settings.llm_model:
         raise HTTPException(
             status_code=503,
-            detail="El chat LLM no está configurado (faltan LLM_API_URL o LLM_API_KEY).",
+            detail="El chat LLM no está configurado (falta LLM_API_URL o LLM_MODEL).",
         )
 
     messages = [m.model_dump() for m in request.messages]
