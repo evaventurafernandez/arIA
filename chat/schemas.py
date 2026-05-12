@@ -40,10 +40,19 @@ class TraceEntry(BaseModel):
     error: str | None = None
 
 
+class ClientAction(BaseModel):
+    """Accion que el frontend debe ejecutar tras recibir la respuesta."""
+
+    id: str
+    action: str  # nombre de la tool cliente: flyTo, toggleLayer, setFilter, getFeatureDetail
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatReply(BaseModel):
     blocks: AssistantBlocks
     text: str = ""  # respuesta tal cual la emitio el LLM (util si los bloques no se detectaron)
     trace: list[TraceEntry] = Field(default_factory=list)
+    client_actions: list[ClientAction] = Field(default_factory=list)
     iterations: int = 0
     truncated: bool = False  # True si se alcanzo LLM_MAX_TOOL_ITERATIONS
 

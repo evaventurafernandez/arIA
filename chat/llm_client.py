@@ -42,6 +42,10 @@ async def chat_completion(
     }
     if tools:
         payload["tools"] = tools
+        # Algunos backends (vLLM con Gemma) no asumen 'auto' por defecto y se
+        # quedan en respuesta textual. Hay que declararlo explicitamente para
+        # que el modelo emita tool_calls cuando proceda.
+        payload["tool_choice"] = "auto"
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:

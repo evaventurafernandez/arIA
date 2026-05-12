@@ -30,9 +30,17 @@ from chat.schemas import (
     AssistantBlocks,
     ChatMessage,
     ChatReply,
+    ClientAction,
     TraceEntry,
 )
-from chat.tools import TOOLS, get_openai_tool_specs, list_tool_names
+from chat.tools import (
+    CLIENT_TOOLS,
+    TOOLS,
+    get_openai_tool_specs,
+    get_tool_parameters,
+    is_client_tool,
+    list_tool_names,
+)
 
 
 HERMES_TOOL_CALL_RE = re.compile(
@@ -166,9 +174,9 @@ def parse_hermes_tool_calls(text: str) -> list[dict[str, Any]]:
 
 
 def _validate_args(tool_name: str, args: Any) -> tuple[bool, str]:
-    """Valida args contra el schema JSON de la tool. Devuelve (ok, error_msg)."""
-    tool = TOOLS.get(tool_name)
-    if tool is None:
+    """Valida args contra el schema JSON de la tool (server o cliente)."""
+    schema = get_tool_parameters(tool_name)
+    if schema is None:
         return False, (
             f"tool_error: tool '{tool_name}' no existe. Tools disponibles: "
             + ", ".join(list_tool_names())
@@ -176,7 +184,7 @@ def _validate_args(tool_name: str, args: Any) -> tuple[bool, str]:
     if not isinstance(args, dict):
         return False, f"tool_error: los argumentos de '{tool_name}' deben ser un objeto JSON."
     try:
-        jsonschema.validate(instance=args, schema=tool.parameters)
+        jsonschema.validate(instance=args, schema=schema)
     except jsonschema.ValidationError as exc:
         return False, f"tool_error: argumentos invalidos para '{tool_name}': {exc.message}"
     return True, ""
@@ -243,6 +251,7 @@ async def run_chat(
 
     tools_spec = get_openai_tool_specs()
     trace: list[TraceEntry] = []
+    client_actions: list[ClientAction] = []
     iterations = 0
     truncated = False
     final_text = ""
@@ -306,6 +315,23 @@ async def run_chat(
                 history.append({"role": "tool", "tool_call_id": call["id"], "content": err})
                 continue
 
+            if is_client_tool(tool_name):
+                action_id = f"ca-{len(client_actions) + 1}"
+                client_actions.append(
+                    ClientAction(id=action_id, action=tool_name, arguments=args)
+                )
+                trace.append(
+                    TraceEntry(
+                        tool=tool_name,
+                        arguments=args,
+                        result_summary=f"client_action queued (id={action_id})",
+                        ok=True,
+                    )
+                )
+                observation = json.dumps({"status": "queued", "id": action_id}, ensure_ascii=False)
+                history.append({"role": "tool", "tool_call_id": call["id"], "content": observation})
+                continue
+
             exec_ok, result, exec_err = await _execute_tool(tool_name, args)
             if not exec_ok:
                 trace.append(TraceEntry(tool=tool_name, arguments=args, ok=False, error=exec_err))
@@ -335,6 +361,7 @@ async def run_chat(
         blocks=blocks,
         text=final_text,
         trace=trace,
+        client_actions=client_actions,
         iterations=iterations,
         truncated=truncated,
     )
