@@ -12,7 +12,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 - Base de capa temporal diaria de `burnt area` Copernicus CLMS con metadata, timeline propia y endpoint de teselas locales por fecha.
 - Pipeline histórico diario de focos NASA FIRMS persistido en `PostgreSQL + PostGIS`, con timeline, estadísticas país y GeoJSON por fecha.
 - Script auxiliar para generar `data/nucleos.geojson` con núcleos de población del IGN.
-- Script auxiliar para generar `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson` con focos activos EFFIS/Copernicus vectorizados desde teselas WMTS.
+- Decisión documentada de usar NASA FIRMS como fuente de focos activos tras contrastarla con EFFIS/Copernicus, evitando publicar una capa EFFIS derivada de teselas.
 
 ## Estructura
 
@@ -24,7 +24,6 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 |-- generar_landcover.py     # Utilidad auxiliar fuera del flujo actual de ingesta
 |-- infra/                   # Infraestructura Docker, SQL e ingesta PostGIS
 |-- generar_nucleos.py       # Descarga y genera data/nucleos.geojson desde IGN
-|-- generar_effis_wfs.py     # Genera una capa vectorial local desde EFFIS/Copernicus
 |-- requirements.txt         # Dependencias Python principales
 `-- .env                     # Variables locales de configuración
 ```
@@ -205,31 +204,7 @@ Para generar núcleos de población desde la API-Features del IGN:
 python generar_nucleos.py
 ```
 
-Para generar la capa local de focos activos EFFIS/Copernicus:
-
-```bash
-python generar_effis_wfs.py --source effis --timeout 30 --retries 3
-```
-
-El script escribe por defecto `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson`. El archivo es un `FeatureCollection` GeoJSON con una feature por componente detectado en las teselas de la capa `viirs.hs.today`. Cada feature incluye geometría `Point`, coordenadas WGS84, tesela de origen (`zoom`, `tile_x`, `tile_y`), número de píxeles detectados, caja de píxeles (`pixel_bbox`), caja geográfica (`bbox_wgs84`) y color medio (`avg_color`).
-
-El origen principal es el WMTS de EFFIS/Copernicus. El backend sirve el GeoJSON local en `/api/effis/wmts`; las subrutas `/api/effis/wmts/{layer}/{z}/{y}/{x}.png` se mantienen como proxy de teselas PNG para regenerar la capa. Como esas teselas no son entidades vectoriales nativas, el script vectoriza los píxeles no transparentes de cada tesela. Si una tesela WMTS falla o llega incompleta, usa un fallback WMS para el mismo bbox de la tesela. La metadata del GeoJSON guarda el número de teselas procesadas, fallos y teselas resueltas por fallback.
-
-También puede ejecutarse contra el proxy local del backend, siempre que Uvicorn esté arrancado:
-
-```bash
-python generar_effis_wfs.py --source endpoint --endpoint-url http://127.0.0.1:8000/api/effis/wmts
-```
-
-Parámetros útiles:
-
-- `--layer`: capa WMTS a descargar. Por defecto `viirs.hs.today`.
-- `--zoom`: zoom de teselas. Por defecto `8`.
-- `--bbox`: área WGS84 `min_lon,min_lat,max_lon,max_lat`. Por defecto cubre España e islas.
-- `--geometry`: salida como `point` o `bbox`. Por defecto `point`.
-- `--output` y `--output-dir`: ruta exacta o carpeta de salida.
-- `--concurrency`, `--timeout` y `--retries`: control de descargas.
-- `--dry-run`: muestra las teselas que se procesarían sin descargar datos.
+Los focos activos de EFFIS/Copernicus se evaluaron como posible capa de contexto y comparación con NASA FIRMS, pero no se mantienen como capa operativa del visor. La razón principal es que el acceso disponible para ese prototipo procedía de teselas WMTS/WMS rasterizadas, no de un servicio vectorial con atributos equivalentes a FIRMS. Para evitar una capa diaria derivada por píxeles, sin atributos originales y con mantenimiento adicional, el visor publica únicamente focos NASA FIRMS y conserva EFFIS para índices FWI/DC.
 
 ## Ejecutar
 
@@ -264,7 +239,6 @@ http://127.0.0.1:8000
 - `GET /api/landcover/point?lon=...&lat=...&bbox=...&width=...&height=...&i=...&j=...&crs=EPSG:3857`: consulta de atributos por punto vía `GetFeatureInfo` sobre el WMS de IGN.
 - `GET /api/landcover/features?bbox=minx,miny,maxx,maxy`: endpoint auxiliar de depuración/detalle espacial desde `core.landcover_polygon`.
 - `GET /api/landcover/features/{id}`: detalle GeoJSON de una feature individual de `core.landcover_polygon`.
-- `GET /api/effis/wmts`: GeoJSON local de focos EFFIS/Copernicus vectorizados.
 
 El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 

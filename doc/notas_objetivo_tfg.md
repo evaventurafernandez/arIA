@@ -1,8 +1,8 @@
 # Notas para discutir el objetivo y alcance del TFG
 
-La idea del TFG es desarrollar un visor web GIS para apoyar la lectura de Avisos de Fenómenos Meteorológicos Adversos y focos de incendio en España. El visor debe reunir información que normalmente se consulta por separado: AEMET, NASA FIRMS, EFFIS/Copernicus, CORINE Land Cover, núcleos de población, carreteras IGN, espacios protegidos y capas de peligrosidad.
+La idea del TFG es desarrollar un visor web GIS para apoyar la lectura de Avisos de Fenómenos Meteorológicos Adversos y focos de incendio en España. El visor debe reunir información que normalmente se consulta por separado: AEMET, NASA FIRMS, EFFIS/Copernicus para peligro meteorológico, CORINE Land Cover, núcleos de población, carreteras IGN, espacios protegidos y capas de peligrosidad.
 
-Además del mapa, interesa incluir una capa de consulta en lenguaje natural con LLM. La idea no sería que el LLM decida, sino que ayude a preguntar al visor cosas como: "muéstrame los avisos peligrosos cerca de núcleos de población" o "compara los focos FIRMS con Copernicus".
+Además del mapa, interesa incluir una capa de consulta en lenguaje natural con LLM. La idea no sería que el LLM decida, sino que ayude a preguntar al visor cosas como: "muéstrame los avisos peligrosos cerca de núcleos de población" o "contextualiza los focos FIRMS con peligro FWI y usos del suelo".
 
 ## Objetivo propuesto
 
@@ -20,7 +20,6 @@ El prototipo ya cuenta con un mapa Leaflet, una API FastAPI y varias capas GIS i
 - clasificar focos por FRP;
 - activar capas WMS de inundabilidad T=10, FWI, sequía DC y CORINE;
 - usar una capa CORINE local filtrada para usos forestales y agrícolas;
-- mostrar focos EFFIS/Copernicus vectorizados desde teselas WMTS;
 - usar leyenda dinámica, filtros, listado lateral y línea temporal de avisos;
 - activar capas relacionadas al seleccionar avisos de agua o focos de incendio.
 
@@ -34,7 +33,7 @@ El alcance debería quedar algo más orientado a datos GIS concretos:
 - Carreteras IGN: añadir una capa de red viaria, al menos distinguiendo carreteras principales si la fuente lo permite.
 - Espacios protegidos: incorporar parques naturales, espacios protegidos o capas de biodiversidad para valorar afección ambiental.
 - Histórico AEMET: estudiar cómo recopilar avisos históricos desde la API o archivos disponibles, guardando fecha de inicio, fecha de fin, fenómeno, zona y evolución del aviso.
-- Focos de incendio: contrastar NASA FIRMS con EFFIS/Copernicus para ver diferencias, coincidencias y limitaciones de cada fuente.
+- Focos de incendio: se contrastó NASA FIRMS con EFFIS/Copernicus para ver diferencias y limitaciones, y se decide mantener solo NASA FIRMS como capa operativa de focos.
 - Base de datos: guardar datos actuales e históricos para poder consultar evolución, no depender solo de la memoria de la aplicación.
 - LLM: incluirlo como forma de consulta del visor, conectado a datos y operaciones GIS reales, no como respuesta libre sin trazabilidad.
 
@@ -48,7 +47,7 @@ El alcance debería quedar algo más orientado a datos GIS concretos:
 - Capas WMS de inundabilidad, FWI, sequía y CORINE.
 - CORINE local filtrado para usos forestales y agrícolas.
 - Límite territorial de España en GeoJSON para filtrar FIRMS.
-- Capa local EFFIS/Copernicus derivada de WMTS.
+- Decisión documentada de descartar la capa local de focos EFFIS/Copernicus derivada de WMTS y usar NASA FIRMS como fuente de focos.
 - Panel resumen con número de avisos, focos y FRP máximo.
 - Scripts auxiliares para generar capas locales.
 
@@ -85,7 +84,7 @@ Yo defendería el TFG como un visor GIS operativo con apoyo LLM básico. El núc
 El alcance mínimo defendible sería:
 
 - avisos AEMET activos y, si es viable, histórico inicial;
-- focos NASA FIRMS y contraste con EFFIS/Copernicus;
+- focos NASA FIRMS y explicación del contraste previo con EFFIS/Copernicus;
 - CORINE filtrado y simplificado;
 - núcleos de población;
 - carreteras IGN;
@@ -104,7 +103,7 @@ Dejaría fuera la predicción automática, la toma de decisiones de emergencia y
 - Qué clases de CORINE son necesarias para el caso de uso.
 - Qué condiciones definen un aviso peligroso.
 - Qué se espera del LLM: prototipo visible, diseño funcional o integración mínima.
-- Cómo validar el resultado: episodios reales, comparación FIRMS-Copernicus o revisión de zonas concretas.
+- Cómo validar el resultado: episodios reales, revisión de zonas concretas y justificación de la elección FIRMS frente a EFFIS/Copernicus para focos activos.
 
 ## Actualización 2026-04-22 sobre landcover interactivo
 

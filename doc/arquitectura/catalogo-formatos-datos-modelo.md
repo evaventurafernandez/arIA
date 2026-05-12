@@ -23,9 +23,8 @@ En la práctica, `GeoJSON` es el formato dominante del modelo para capas estáti
 | Focos NASA FIRMS | Dinámico | `CSV` remoto | Lista JSON de objetos normalizados | Se consulta en vivo al abrir el visor |
 | Límite de España | Estático local | `GeoJSON` | `GeoJSON FeatureCollection` | Se usa para filtro espacial y recorte visual |
 | CORINE filtrado | Estático generado | `GPKG` | `GeoJSON FeatureCollection` | Capa temática simplificada y disuelta |
-| Focos EFFIS vectorizados | Semiestático generado | `WMTS/WMS` ráster `PNG` | `GeoJSON FeatureCollection` | Snapshot local derivado de píxeles |
 | Núcleos de población | Estático generado | API Features IGN en JSON | `GeoJSON FeatureCollection` | Dataset auxiliar, hoy no conectado al visor |
-| Capas externas EFFIS/MITECO/IGN | Dinámico externo | `WMS` o `WMTS` | Teselas ráster `PNG` | Se consumen directamente en Leaflet |
+| Capas externas EFFIS/MITECO/IGN | Dinámico externo | `WMS` | Teselas ráster `PNG` | Se consumen directamente en Leaflet |
 
 ## Modelo lógico actual
 
@@ -111,60 +110,7 @@ Cada feature representa una clase temática agregada, no una tesela ni una entid
 
 Es el principal ejemplo de capa estática temática normalizada a un formato de intercambio simple.
 
-### 3. Focos EFFIS/Copernicus vectorizados
-
-**Fichero:** `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson`
-
-**Script generador:** `generar_effis_wfs.py`
-
-**Tipo real actual:** `FeatureCollection`
-
-**Número de features observado:** `64`
-
-**Geometría observada actualmente:** `Point`
-
-**Claves de nivel superior observadas:**
-
-- `type`
-- `name`
-- `metadata`
-- `features`
-
-**Propiedades observadas en las features:**
-
-- `id`
-- `source`
-- `source_mode`
-- `layer`
-- `zoom`
-- `tile_x`
-- `tile_y`
-- `pixel_count`
-- `pixel_bbox`
-- `bbox_wgs84`
-- `avg_color`
-
-**Metadata relevante observada:**
-
-- fecha de generación,
-- origen WMTS,
-- modo de solicitud,
-- bbox procesado,
-- zoom,
-- geometría elegida,
-- umbrales de detección,
-- estadísticas de teselas,
-- listado de teselas fallidas.
-
-**Particularidad importante:**
-
-Aunque se almacena como GeoJSON local y el frontend lo trata como una capa vectorial, no procede de un servicio vectorial nativo. Es una derivación a partir de teselas `PNG` de un `WMTS/WMS`.
-
-**Rol en el modelo:**
-
-Es una capa semiestática o snapshot local. Conviene distinguirla de las capas estáticas verdaderas porque su contenido depende del momento de generación.
-
-### 4. Núcleos de población
+### 3. Núcleos de población
 
 **Fichero:** `data/nucleos.geojson`
 
@@ -202,7 +148,7 @@ Dataset auxiliar preparado para integrarse, pero actualmente no aparece conectad
 
 ## Datos dinámicos normalizados en JSON
 
-### 5. Avisos AEMET
+### 4. Avisos AEMET
 
 **Formato de entrada:** `CAP XML` empaquetado en `tar` comprimido con `gzip`
 
@@ -226,7 +172,7 @@ Dataset auxiliar preparado para integrarse, pero actualmente no aparece conectad
 
 El campo `polygon` no se convierte a GeoJSON, sino que se conserva como cadena CAP y se parsea después en el frontend.
 
-### 6. Focos NASA FIRMS
+### 5. Focos NASA FIRMS
 
 **Formato de entrada:** `CSV`
 
@@ -261,7 +207,7 @@ Aquí sí hay una normalización semántica explícita: clasificación por `FRP`
 
 ## Formatos externos consumidos directamente
 
-### 7. Teselas WMS/WMTS
+### 6. Teselas WMS
 
 El frontend consume varias capas ráster externas:
 
@@ -276,21 +222,20 @@ En estos casos el modelo local no almacena entidades ni atributos. Solo se manej
 
 ### 1. GeoJSON es el formato canónico de las capas estáticas
 
-Todas las capas geográficas locales relevantes del proyecto convergen en `GeoJSON FeatureCollection`, incluso cuando el origen real es muy distinto (`GPKG`, API JSON, ráster WMTS).
+Todas las capas geográficas locales relevantes del proyecto convergen en `GeoJSON FeatureCollection`, incluso cuando el origen real es muy distinto (`GPKG`, API JSON).
 
 ### 2. El modelo actual está orientado a consumo, no a tipado formal
 
 Los contratos están pensados para que el visor funcione con poco procesamiento adicional, pero no están centralizados en esquemas reutilizables. El resultado es práctico, aunque deja el modelo repartido entre backend, scripts y frontend.
 
-### 3. Hay tres tipos distintos de “estático”
+### 3. Hay dos tipos principales de dato estático local
 
 Conviene distinguirlos en la documentación del TFG:
 
 - **Estático de referencia:** límite de España.
 - **Estático temático generado:** CORINE filtrado, núcleos.
-- **Snapshot local derivado de una fuente dinámica:** EFFIS vectorizado.
 
-Meterlos a todos en la misma categoría puede ocultar diferencias importantes de trazabilidad y caducidad.
+Meterlos en la misma categoría que los datos dinámicos puede ocultar diferencias importantes de trazabilidad y caducidad.
 
 ### 4. Hay una oportunidad clara de normalización
 

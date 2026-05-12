@@ -21,7 +21,7 @@ condiciones_de_uso: "Revisar condiciones específicas de cada fuente y citar cad
 grado_de_confianza: alto
 pendientes_de_verificar:
   - "Confirmar si se quiere citar expresamente la fecha de consulta 2026-04-21 en la memoria para los recursos web."
-  - "Revisar si la nota debe enlazar también con una futura nota de validación FIRMS frente a EFFIS."
+  - "Revisar si la nota debe enlazar también con la decisión de retirar los focos EFFIS y priorizar NASA FIRMS."
   - "No usar Hawbaker et al. (2017) como comparativa directa VIIRS/MODIS hasta verificar esa referencia."
 ---
 

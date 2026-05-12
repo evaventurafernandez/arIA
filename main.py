@@ -10,13 +10,12 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 import asyncio
-from contextlib import asynccontextmanager, redirect_stdout
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from email.utils import format_datetime
 from functools import lru_cache
 from pathlib import Path
  
-import generar_effis_wfs
 import httpx
 from PIL import Image
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -40,9 +39,6 @@ class Settings(BaseSettings):
     firms_historical_default_date_to: str = "2025-08-31"
     aemet_warnings_default_date_from: str = "2025-05-01"
     aemet_warnings_default_date_to: str = "2025-08-31"
-    effis_auto_refresh: bool = True
-    effis_refresh_timeout: float = 30.0
-    effis_refresh_retries: int = 3
     postgres_host: str = "127.0.0.1"
     postgres_port: int = 5432
     postgres_db: str = "meteovisor"
@@ -97,10 +93,7 @@ nucleos_layer_metadata_cache = {
     "expires_at": 0.0,
 }
 
-EFFIS_WMTS_BASE = "https://maps.effis.emergency.copernicus.eu/gwist/wmts"
 EFFIS_WMS_BASE = "https://maps.effis.emergency.copernicus.eu/effis"
-EFFIS_WMTS_LAYERS = {"viirs.hs.today"}
-EFFIS_LOCAL_FIRES_PATH = "data/copernicus/fires/effis_viirs_hs_today_wfs.geojson"
 SPAIN_BOUNDARY_PATH = "data/boundaries/spain_nuts_2024_01m.geojson"
 LANDCOVER_WMS_URL = "https://servicios.idee.es/wms-inspire/ocupacion-suelo"
 LANDCOVER_WMS_LAYER = "LC.LandCoverSurfaces"
@@ -1599,12 +1592,6 @@ def build_burnt_area_cumulative_locator_geojson_cached(
     }
 
 TRACEABLE_LAYERS = {
-    "effis_fires": {
-        "name": "Focos incendio Copernicus (EFFIS)",
-        "service": "GeoJSON local",
-        "layer": "effis_viirs_hs_today_wfs",
-        "status_label": "cargada",
-    },
     "effis_fwi": {
         "name": "Peligro de incendio FWI (EFFIS)",
         "service": "WMS",
@@ -2863,74 +2850,6 @@ def _float_or_none(value) -> float | None:
 def current_local_date_iso() -> str:
     return datetime.now().astimezone().date().isoformat()
 
-def file_size_mb(path: str) -> float:
-    return os.path.getsize(path) / 1024 / 1024
-
-def format_utc_timestamp(value: str | None) -> str:
-    if not value:
-        return "fecha no indicada"
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.strftime("%Y-%m-%d %H:%M UTC")
-    except ValueError:
-        return value
-
-def read_effis_local_metadata() -> tuple[dict, int] | None:
-    if not os.path.exists(EFFIS_LOCAL_FIRES_PATH):
-        return None
-    with open(EFFIS_LOCAL_FIRES_PATH, encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("metadata", {}), len(data.get("features", []))
-
-def effis_generated_local_date(metadata: dict) -> str | None:
-    value = metadata.get("generated_at_utc")
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone().date().isoformat()
-
-async def refresh_effis_local_layer_if_needed() -> None:
-    if not settings.effis_auto_refresh:
-        print("  EFFIS/Copernicus autoactualización desactivada")
-        return
-
-    effis_metadata = read_effis_local_metadata()
-    metadata = effis_metadata[0] if effis_metadata else {}
-    generated_date = effis_generated_local_date(metadata)
-    today = current_local_date_iso()
-    if generated_date == today:
-        print("  EFFIS/Copernicus local actualizado hoy; no se regenera")
-        return
-
-    if generated_date:
-        generated_at = format_utc_timestamp(metadata.get("generated_at_utc"))
-        print(f"  EFFIS/Copernicus local desactualizado ({generated_at}); actualizando...")
-    else:
-        print("  EFFIS/Copernicus local no encontrado; generando capa de hoy...")
-
-    args = generar_effis_wfs.parse_args([
-        "--source", "effis",
-        "--timeout", str(settings.effis_refresh_timeout),
-        "--retries", str(settings.effis_refresh_retries),
-    ])
-
-    try:
-        with redirect_stdout(io.StringIO()):
-            result = await generar_effis_wfs.async_main(args)
-    except Exception as exc:
-        print(f"  AVISO: no se pudo actualizar EFFIS/Copernicus: {exc}")
-        return
-
-    if result != 0:
-        print(f"  AVISO: no se pudo actualizar EFFIS/Copernicus (código {result})")
-        return
-    print("  EFFIS/Copernicus actualizado")
-
 def trace_layer_message(key: str, requested_time: str | None = None) -> str:
     layer = TRACEABLE_LAYERS.get(key)
     if not layer:
@@ -2943,25 +2862,6 @@ def trace_layer_message(key: str, requested_time: str | None = None) -> str:
     if layer.get("status_label"):
         return f"  {name}: {layer['status_label']}"
     return f"  {name}: cargada"
-
-def log_static_layers() -> None:
-    print("Cargando capas locales...")
-    effis_metadata = read_effis_local_metadata()
-    if effis_metadata is None:
-        print("  AVISO: capa local EFFIS/Copernicus no encontrada.")
-        print("  Ejecuta primero: python generar_effis_wfs.py")
-    else:
-        metadata, feature_count = effis_metadata
-        generated_at = format_utc_timestamp(metadata.get("generated_at_utc"))
-        source_layer = metadata.get("layer", "viirs.hs.today")
-        tiles_ok = metadata.get("tiles_ok", "n/d")
-        tiles_total = metadata.get("tiles_total", "n/d")
-        print(
-            f"  EFFIS/Copernicus local listo "
-            f"({file_size_mb(EFFIS_LOCAL_FIRES_PATH):.1f} MB)"
-        )
-        print(f"    Capa origen: {source_layer}; generado: {generated_at}")
-        print(f"    Features: {feature_count}; teselas correctas: {tiles_ok}/{tiles_total}")
 
 def log_wms_catalog() -> None:
     print("Cargando catálogo de capas WMS...")
@@ -3123,8 +3023,6 @@ async def lifespan(app: FastAPI):
     print("Cargando geometria de Espana...")
     await load_spain_geometry()
 
-    await refresh_effis_local_layer_if_needed()
-    log_static_layers()
     log_wms_catalog()
 
     print("Inicializando PostgreSQL/PostGIS...")
@@ -3686,58 +3584,4 @@ def get_spain_boundary():
         raise HTTPException(status_code=404, detail="No se encontró el límite de España")
     return FileResponse(SPAIN_BOUNDARY_PATH, media_type='application/geo+json')
 
-@app.get("/api/effis/wmts")
-@app.get("/api/effis/wmts/")
-def get_effis_wmts_layer():
-    """Capa local GeoJSON de focos EFFIS/Copernicus generada desde WMTS."""
-    if not os.path.exists(EFFIS_LOCAL_FIRES_PATH):
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "error": "Ejecuta generar_effis_wfs.py para crear la capa EFFIS local",
-        }
-    return FileResponse(
-        EFFIS_LOCAL_FIRES_PATH,
-        media_type='application/geo+json',
-        headers={"Cache-Control": "no-store"},
-    )
-
-@app.get("/api/effis/wmts/{layer}/{z:int}/{y:int}/{x:int}.png")
-async def get_effis_wmts_tile(layer: str, z: int, y: int, x: int):
-    """Proxy local para teselas WMTS de EFFIS que fallan en algunos navegadores con HTTP/2."""
-    if layer not in EFFIS_WMTS_LAYERS:
-        raise HTTPException(status_code=404, detail="Capa EFFIS no permitida")
-    if z < 0 or y < 0 or x < 0:
-        raise HTTPException(status_code=400, detail="Coordenadas de tesela no válidas")
-
-    params = {
-        "Service": "WMTS",
-        "Request": "GetTile",
-        "Version": "1.0.0",
-        "Layer": layer,
-        "Style": "default",
-        "Format": "image/png; mode=8bit",
-        "TileMatrixSet": "EPSG3857",
-        "TileMatrix": z,
-        "TileRow": y,
-        "TileCol": x,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True, trust_env=False) as client:
-            r = await client.get(
-                EFFIS_WMTS_BASE,
-                params=params,
-                headers={"Accept": "image/png,*/*", "User-Agent": "Mozilla/5.0"},
-            )
-            r.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="Error consultando EFFIS") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="No se pudo consultar EFFIS") from exc
-
-    return Response(
-        content=r.content,
-        media_type=r.headers.get("content-type", "image/png"),
-        headers={"Cache-Control": "public, max-age=300"},
-    )
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

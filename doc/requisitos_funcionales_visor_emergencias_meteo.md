@@ -646,7 +646,7 @@ Objetivo: disponer de una plataforma GIS funcional, sólida y trazable.
 - gestión de capas y leyendas;
 - ingesta de avisos AEMET actuales;
 - ingesta de hotspots NASA actuales;
-- capas EFFIS, inundabilidad, usos del suelo, población y carreteras;
+- capas FWI/DC de EFFIS, inundabilidad, usos del suelo, población y carreteras;
 - fichas de detalle;
 - filtros básicos;
 - cruces espaciales básicos;

@@ -34,13 +34,13 @@ La memoria del TFG debe incluir un apartado dedicado al tratamiento de datos, la
 
 El artículo de referencia que ha disparado la nota es el capítulo de EDA del *GIS AI Manual* de Jo Wilkin, que describe un flujo razonablemente típico para datos espaciales: revisión inicial, perfilado de variables, detección y tratamiento de valores atípicos y nulos, y exploración descriptiva antes de pasar a modelado o visualización. Es una buena guía de partida porque se sitúa explícitamente en contexto GIS, pero es un material docente; conviene apoyarse en referencias bibliográficas más reconocidas para sostener el apartado en una memoria de TFG.
 
-La sección debería conectar este marco genérico con lo que ya se hace realmente en el repositorio (filtrado FIRMS por `confidence in {n, h}`, criterio VIIRS frente a MODIS, recorte espacial con el GeoJSON `spain_nuts_2024_01m`, simplificación de CORINE con `tolerance=0.005`, vectorización por píxel de las teselas WMTS de EFFIS, decisiones de simbología por FRP, etc.), de forma que la parte teórica no quede desconectada del prototipo.
+La sección debería conectar este marco genérico con lo que ya se hace realmente en el repositorio (filtrado FIRMS por `confidence in {n, h}`, criterio VIIRS frente a MODIS, recorte espacial con el GeoJSON `spain_nuts_2024_01m`, simplificación de CORINE con `tolerance=0.005`, decisión de descartar la capa de focos EFFIS derivada de teselas rasterizadas, decisiones de simbología por FRP, etc.), de forma que la parte teórica no quede desconectada del prototipo.
 
 ## Datos explícitos
 - Falta en la memoria un apartado específico de tratamiento de datos, limpieza y EDA.
 - El disparador de esta nota es: https://jo-wilkin.github.io/gis-ai-manual/exploratory-data-analysis.html
 - Esa fuente es útil como guía operativa, pero al ser material docente conviene reforzarla con bibliografía académica y técnica reconocida.
-- La sección debe enlazar con los procesos ya documentados del proyecto (ingesta FIRMS, vectorización EFFIS, pipeline CORINE, núcleos IGN, límite GISCO).
+- La sección debe enlazar con los procesos ya documentados del proyecto (ingesta FIRMS, decisión FIRMS frente a EFFIS para focos activos, pipeline CORINE, núcleos IGN, límite GISCO).
 
 ## Propuesta de ubicación en la memoria
 - Opción A: capítulo propio, p. ej. "Tratamiento y exploración de datos", entre "Fuentes de datos" y "Arquitectura del visor".
@@ -55,10 +55,10 @@ Recomendación inicial: opción A o B. El TFG trabaja con varias fuentes heterog
 - Decisiones tomadas en cada fuente, con justificación bibliográfica:
   - AEMET CAP: parseo del XML, criterios para clasificar nivel/severidad, tratamiento de avisos sin polígono, manejo de duplicados por `identifier`.
   - NASA FIRMS: filtros por `confidence`, recorte por límite nacional, gestión de falsos positivos y elección de VIIRS frente a MODIS.
-  - EFFIS/Copernicus: vectorización por píxel desde teselas WMTS y limitaciones de la pérdida de atributos respecto a un servicio vectorial nativo.
+  - EFFIS/Copernicus: evaluación inicial como fuente de focos y descarte de la capa derivada por píxeles al no disponer de atributos vectoriales equivalentes a FIRMS.
   - CORINE: filtrado por `CODE_18`, simplificación, disolución por clase y reproyección.
   - Núcleos IGN: filtro por habitantes positivos, descartando registros sin dato o con `0` habitantes porque en escenarios de emergencia su riesgo poblacional se considera nulo; simplificación de geometrías y umbrales por escala/zoom.
-- Análisis exploratorio mínimo: distribuciones de FRP, conteos por nivel de aviso y por fenómeno, comparativa visual FIRMS vs EFFIS, cobertura temporal del histórico, etc.
+- Análisis exploratorio mínimo: distribuciones de FRP, conteos por nivel de aviso y por fenómeno, justificación de la elección FIRMS frente a EFFIS para focos activos, cobertura temporal del histórico, etc.
 - Buenas prácticas adoptadas: trazabilidad de fuentes, registro de fecha de descarga, separación entre datos brutos, intermedios y publicados (esquema `source` / `core` / `pub` que ya usa el proyecto en PostgreSQL).
 
 ## Bibliografía recomendada como respaldo del apartado

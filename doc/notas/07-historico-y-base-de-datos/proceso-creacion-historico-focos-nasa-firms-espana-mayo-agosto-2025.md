@@ -23,7 +23,7 @@ condiciones_de_uso: "uso académico interno; pendiente de confirmar la atribuci�
 grado_de_confianza: alto
 pendientes_de_verificar:
   - "Confirmar la cita institucional exacta de NASA FIRMS y Earthdata que se usará en la memoria."
-  - "Confirmar si conviene documentar aparte una validación cuantitativa del histórico FIRMS frente a EFFIS/Copernicus."
+  - "Confirmar si conviene ampliar la nota de decisión FIRMS frente a EFFIS con evidencias cuantitativas adicionales."
   - "Confirmar si la siguiente iteración del histórico debe añadir agregados territoriales por CCAA o provincia además de la serie país."
 ---
 
@@ -119,4 +119,4 @@ La decisión importante de fondo ha sido separar claramente este histórico `SP`
 ## Datos faltantes o ambiguos
 - Falta confirmar cómo citar formalmente NASA FIRMS y Earthdata en la memoria del TFG.
 - Falta decidir si la siguiente ampliación del histórico debe añadir agregados territoriales además de la serie país.
-- Falta decidir si conviene documentar en otra nota una validación comparativa sistemática entre histórico FIRMS y productos EFFIS/Copernicus.
+- Falta decidir si conviene ampliar la nota de decisión FIRMS frente a EFFIS con una validación comparativa sistemática del histórico.

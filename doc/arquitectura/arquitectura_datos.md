@@ -54,7 +54,7 @@ Se conservarán en filesystem los artefactos originales o casi originales recibi
 - `CSV`
 - `GeoJSON`
 - `GeoPackage`
-- respuestas derivadas de `WMTS/WMS`
+- respuestas derivadas de `WMS`
 - snapshots descargados o generados durante procesos de ingesta
 
 ### 4.2 Para qué se conserva
@@ -122,7 +122,6 @@ raw/
   aemet/
   firms/
   ign/
-  effis/
 ```
 
 ### 6.2 Nivel `source`
@@ -144,7 +143,6 @@ Ejemplos:
 - `source_aemet_alert`
 - `source_firms_hotspot`
 - `source_ign_nucleo`
-- `source_effis_detection`
 
 ### 6.3 Nivel `core`
 
@@ -245,13 +243,13 @@ Ejemplos:
 - CORINE filtrado
 - núcleos de población
 
-### 8.3 Snapshot derivado
+### 8.3 Producto derivado temporal
 
-Capa local generada a partir de una fuente dinámica o ráster, pero almacenada como producto vectorial temporal.
+Capa local generada a partir de una fuente dinámica o ráster, pero almacenada como producto temporal para explotación del visor.
 
 Ejemplo:
 
-- focos EFFIS vectorizados desde WMTS/WMS
+- áreas quemadas diarias Copernicus CLMS procesadas como teselas locales
 
 ### 8.4 Dato dinámico operacional
 
