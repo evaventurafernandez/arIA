@@ -19,7 +19,7 @@ explorado o pendiente.
 | AEMET OpenData | Avisos meteorológicos CAP activos | Implementado |
 | NASA FIRMS | Hotspots recientes VIIRS, filtrados por España; MODIS opcional para contraste histórico/validación | Implementado |
 | EFFIS/Copernicus WMS | FWI y DC diarios | Implementado |
-| EFFIS/Copernicus WMTS | Focos VIIRS `viirs.hs.today`, vectorizados a GeoJSON local | Implementado |
+| EFFIS/Copernicus WMTS | Focos VIIRS `viirs.hs.today` evaluados para comparación con FIRMS | Descartado como capa operativa |
 | SNCZI/MITECO | Zonas inundables fluviales T=10 vía WMS | Implementado |
 | CORINE Land Cover 2018 | WMS completo y GeoJSON local filtrado | Implementado |
 | API-Features IGN `nuc` | Núcleos de población descargados a GeoJSON local | Generado, pendiente de integrar en el frontend |
@@ -361,9 +361,10 @@ confidence in ("n", "h")
 ```
 
 Es decir, se descartan detecciones de confianza baja para reducir falsos
-positivos. Este filtro afecta al número de focos mostrados y debe tenerse en
-cuenta al comparar FIRMS con EFFIS/Copernicus. Si se activa la fuente opcional
-`MODIS_NRT`, conviene revisar esta regla porque su codificación de confianza no
+positivos. Este filtro afecta al número de focos mostrados y forma parte de la
+justificación para mantener FIRMS como fuente operativa de focos tras evaluar
+EFFIS/Copernicus. Si se activa la fuente opcional `MODIS_NRT`, conviene revisar
+esta regla porque su codificación de confianza no
 es necesariamente equivalente a la categórica de VIIRS.
 
 ### Limitaciones
@@ -383,7 +384,7 @@ es necesariamente equivalente a la categórica de VIIRS.
 
 ---
 
-## 3. EFFIS / Copernicus — peligro de incendio y focos activos
+## 3. EFFIS / Copernicus — peligro de incendio y focos activos evaluados
 
 ### Fuente
 
@@ -404,12 +405,6 @@ quemadas y estadísticas.
 ```text
 WMS índices:
 https://maps.effis.emergency.copernicus.eu/effis
-
-WMTS focos activos:
-https://maps.effis.emergency.copernicus.eu/gwist/wmts
-
-Fallback WMS para vectorización de teselas:
-https://maps.effis.emergency.copernicus.eu/gwis
 ```
 
 ### Capas implementadas
@@ -418,11 +413,19 @@ https://maps.effis.emergency.copernicus.eu/gwis
 |---|---|---|---|
 | `mf010.fwi` | WMS | Fire Weather Index, modelo MeteoFrance ~10 km | Implementada |
 | `mf010.dc` | WMS | Drought Code, subcomponente del FWI | Implementada |
-| `viirs.hs.today` | WMTS | Focos activos VIIRS del último día | Vectorizada a GeoJSON local |
 
-La versión antigua mencionaba `viirs.hs` y `modis.hs` como WMS implementadas.
-En el prototipo actual, la capa visible de focos Copernicus se genera desde
-teselas WMTS de `viirs.hs.today`, no desde un WFS nativo.
+La capa `viirs.hs.today` de focos activos EFFIS/Copernicus se llegó a evaluar
+como contexto y contraste frente a `NASA FIRMS`, pero se ha retirado del visor
+como capa operativa. La implementación disponible dependía de vectorizar
+teselas `WMTS/WMS` rasterizadas, por lo que el resultado no conservaba atributos
+originales equivalentes a los de FIRMS ni ofrecía un contrato vectorial estable.
+
+La decisión final es mantener EFFIS en el visor para el contexto meteorológico
+de propagación (`FWI` y `DC`) y usar `NASA FIRMS` como única fuente visible de
+focos activos. La comparativa queda documentada como criterio de alcance: se
+revisó EFFIS/Copernicus, pero se descartó publicar una capa diaria derivada por
+píxeles para evitar ambigüedad analítica, mantenimiento extra y duplicidad de
+mensajes frente a FIRMS.
 
 ### Parámetros WMS relevantes
 
@@ -474,42 +477,6 @@ prototipo ni la tabla EFFIS consultada.
 
 Corrección frente a la versión antigua: la clasificación `100 / 300 / 600` era
 demasiado genérica y no coincidía con la tabla EFFIS usada en el frontend.
-
-### Vectorización local de focos EFFIS
-
-Script:
-
-```text
-generar_effis_wfs.py
-```
-
-Salida:
-
-```text
-data/copernicus/fires/effis_viirs_hs_today_wfs.geojson
-```
-
-Aunque el nombre del fichero incluye `wfs`, no es un WFS real. El script crea
-un GeoJSON local a partir de píxeles no transparentes de teselas WMTS PNG. Cada
-componente detectado se convierte en una feature, normalmente de tipo `Point`.
-
-Metadata actual del fichero local en este repositorio:
-
-| Campo | Valor |
-|---|---|
-| `generated_at_utc` | `2026-04-15T07:39:09.346410+00:00` |
-| `layer` | `viirs.hs.today` |
-| `zoom` | `8` |
-| `geometry` | `point` |
-| `tiles_total` | `270` |
-| `tiles_ok` | `270` |
-| `tiles_failed` | `0` |
-| `tiles_fallback_wms` | `61` |
-| features | `87` |
-
-Limitación importante: estas features derivan de imagen, por lo que no tienen
-los atributos originales de un servicio vectorial nativo. Sirven para contraste
-visual con FIRMS, no para análisis atributivo fino.
 
 ---
 
@@ -830,7 +797,6 @@ avisos, focos y áreas de influencia.
 
 - OGC WMS 1.1.1: EFFIS.
 - OGC WMS 1.3.0: IDEE/GeoServer.
-- OGC WMTS 1.0.0: teselas EFFIS `viirs.hs.today`.
 - OGC API Features: API-Features IGN.
 - CAP 1.2: avisos AEMET.
 - GeoJSON: capas locales procesadas.
@@ -854,7 +820,7 @@ avisos, focos y áreas de influencia.
 
 - **Leaflet 1.9.4:** https://leafletjs.com
 - **Mapa base actual:** `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png`
-- **WMS/WMTS/GeoJSON:** capas consumidas directamente en Leaflet.
+- **WMS/GeoJSON/MVT:** capas consumidas desde Leaflet o desde endpoints locales.
 
 Corrección frente a la versión antigua: el frontend actual usa CartoCDN
 `light_all`, no `dark_all`.
@@ -866,7 +832,6 @@ Corrección frente a la versión antigua: el frontend actual usa CartoCDN
 | `data/landcover.geojson` | CORINE filtrado y disuelto |
 | `data/nucleos.geojson` | Núcleos IGN >= 500 habitantes |
 | `data/boundaries/spain_nuts_2024_01m.geojson` | Límite nacional España |
-| `data/copernicus/fires/effis_viirs_hs_today_wfs.geojson` | Focos EFFIS vectorizados desde WMTS |
 
 ---
 
@@ -880,10 +845,12 @@ como la fecha de descarga. Para histórico, el `identifier` no debe tratarse com
 
 ### FIRMS frente a EFFIS
 
-FIRMS proporciona detecciones puntuales con atributos satelitales. La capa EFFIS
-local del prototipo, en cambio, se deriva visualmente de teselas WMTS. Por tanto,
-la comparación FIRMS/EFFIS debe formularse como comparación visual o espacial
-aproximada, no como equivalencia directa de atributos.
+FIRMS proporciona detecciones puntuales con atributos satelitales (`FRP`,
+sensor, hora de adquisición, confianza, etc.). La capa de focos activos EFFIS
+evaluada durante el prototipo se obtenía desde teselas rasterizadas, de modo que
+la comparación no ofrecía equivalencia directa de atributos. Por eso se decidió
+mantener `NASA FIRMS` como única fuente visible de focos activos y dejar EFFIS
+como contexto meteorológico mediante `FWI` y `DC`.
 
 ### WMS frente a datos vectoriales
 
@@ -924,7 +891,7 @@ indicar fuentes, filtros y operaciones aplicadas.
 | Red viaria | IGN/IDEE Transportes WFS | Proximidad e impacto en movilidad |
 | Exposición ambiental | MITECO ENP / Red Natura 2000 | Afección a espacios protegidos |
 | Población | API-Features IGN `nuc` | Exposición humana |
-| Validación incendio | Comparación FIRMS + EFFIS + CORINE + FWI/DC | Coherencia entre fuentes |
+| Validación incendio | FIRMS + CORINE + FWI/DC, con nota de comparación previa frente a EFFIS | Coherencia entre fuente de focos y contexto |
 | Validación inundación | AEMET + SNCZI T10 + población/carreteras | Priorización por exposición |
 
 ---

@@ -64,6 +64,8 @@ CREATE INDEX IF NOT EXISTS aemet_max_temperature_warning_area_code_idx
     ON core.aemet_max_temperature_warning (area_code);
 CREATE INDEX IF NOT EXISTS aemet_max_temperature_warning_temp_idx
     ON core.aemet_max_temperature_warning (temperature_max_c);
+CREATE INDEX IF NOT EXISTS aemet_max_temperature_warning_representative_source_record_id_idx
+    ON core.aemet_max_temperature_warning (representative_source_record_id);
 CREATE INDEX IF NOT EXISTS aemet_max_temperature_warning_geom_gix
     ON core.aemet_max_temperature_warning USING GIST (geom);
 CREATE INDEX IF NOT EXISTS aemet_max_temperature_warning_geom_webmercator_gix

@@ -8,3 +8,4 @@ data/copernicus/burnt_area/
 data-store/files/
 data-store/postgres/data/
 tmp/
+*/**/logs/

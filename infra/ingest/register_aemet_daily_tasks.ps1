@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path,
+    [string]$RepoRoot = "",
 
     [ValidatePattern("^[^\\/]+$")]
     [string]$TaskFolder = "TFG",
@@ -9,11 +9,18 @@ param(
     [string]$StartTime = "01:00",
 
     [ValidateRange(1, 120)]
-    [int]$StepSpacingMinutes = 15
+    [int]$StepSpacingMinutes = 15,
+
+    [ValidateRange(1, 24)]
+    [int]$ExecutionTimeLimitHours = 6
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+if (-not $RepoRoot) {
+    $RepoRoot = Join-Path $PSScriptRoot "..\.."
+}
 
 $ResolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $RunnerPath = Join-Path $ResolvedRepoRoot "infra\ingest\run_aemet_daily_step.ps1"
@@ -68,13 +75,13 @@ $Definitions = @(
         Name = "AEMET calor 03 refresh core"
         Step = "refresh-core"
         Offset = 2
-        Description = "Reconstruye core.aemet_max_temperature_warning desde source."
+        Description = "Actualiza incrementalmente core.aemet_max_temperature_warning desde source."
     },
     [pscustomobject]@{
         Name = "AEMET calor 04 refresh pub"
         Step = "refresh-pub"
         Offset = 3
-        Description = "Refresca pub.aemet_max_temperature_daily_feature para GeoJSON y MVT."
+        Description = "Actualiza incrementalmente pub.aemet_max_temperature_daily_feature para GeoJSON y MVT."
     },
     [pscustomobject]@{
         Name = "AEMET calor 05 publica estadisticas"
@@ -104,7 +111,7 @@ foreach ($Definition in $Definitions) {
     $Settings = New-ScheduledTaskSettingsSet `
         -StartWhenAvailable `
         -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+        -ExecutionTimeLimit (New-TimeSpan -Hours $ExecutionTimeLimitHours)
 
     $Task = New-ScheduledTask `
         -Action $Action `

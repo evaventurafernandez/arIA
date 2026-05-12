@@ -26,7 +26,6 @@ Dispones de los siguientes conjuntos de datos y servicios cargados en el visor M
 - Histórico de avisos AEMET acotado, en esta primera fase, a avisos por temperaturas máximas.
 - Focos activos NASA FIRMS (sensores VIIRS NOAA-20, NOAA-21 y SNPP) filtrados a España y a confianza nominal o alta.
 - Histórico diario de focos NASA FIRMS persistido en PostGIS para mayo-agosto 2025.
-- Focos activos de EFFIS / Copernicus vectorizados localmente desde teselas WMTS.
 - Áreas quemadas Copernicus CLMS Burnt Area v4, con timeline propia y teselas PNG diarias mayo-agosto 2025.
 - Capas WMS externas de peligrosidad por inundación fluvial T=10, FWI y sequía DC.
 
@@ -99,7 +98,6 @@ El prompt del documento original asume algunas capas y variables que no coincide
 - Histórico FIRMS: `/api/layers/firms-history`, `/api/firms/history/timeline`, `/api/firms/history/stats/daily`, `/api/firms/history/features`.
 - Áreas quemadas Burnt Area v4: `/api/layers/burnt-area`, `/api/burnt-area/timeline`, `/api/burnt-area/stats/daily`, `/api/burnt-area/tiles`.
 - Landcover CORINE 2018: `/api/landcover`, `/api/landcover/tiles` (MVT), `/api/landcover/point` (consulta puntual GetFeatureInfo IGN), `/api/landcover/features`.
-- Focos EFFIS / Copernicus vectorizados: `/api/effis/wmts`.
 - Capas WMS externas: peligrosidad fluvial T=10, FWI, sequía DC.
 
 ### 2.3 Capas pendientes (no disponibles aún en el prototipo)
@@ -127,7 +125,6 @@ Los ejemplos de la Sección 4 invocan tools de un catálogo cerrado. La lista no
 - `burntAreaIntersectPopulation(date_range)`: áreas quemadas que intersectan núcleos.
 - `crossAlertsFloodT10(date_range)`: avisos hidrometeorológicos que intersectan zonas inundables T=10.
 - `firmsHotspotAnalysis(region | bbox, date_from, date_to, sensor?)`: clusters de focos históricos FIRMS por densidad espacial.
-- `compareFirmsEffis(date)`: superposición de detecciones FIRMS y EFFIS para una fecha.
 - `summarizeSituation(scope)`: resumen ejecutivo agregado por territorio o ventana temporal.
 - `explainTerm(term)`: definición y contexto operativo de un término del glosario (FRP, FWI, T10, etc.).
 
@@ -139,14 +136,14 @@ Cada ejemplo se desarrolla siguiendo el formato de la Sección 1.6. Los datos nu
 
 ### 4.1 ¿Qué municipios han tenido focos de calor y viento fuerte en las últimas 24 horas?
 
-*Pregunta original del documento de partida. Combina dos condiciones: focos de calor y viento. El visor dispone de focos (FIRMS, EFFIS), pero no de mediciones de viento; sí de avisos CAP de AEMET por viento cuando estén vigentes.*
+*Pregunta original del documento de partida. Combina dos condiciones: focos de calor y viento. El visor dispone de focos NASA FIRMS, pero no de mediciones de viento; sí de avisos CAP de AEMET por viento cuando estén vigentes.*
 
 **[Consulta Interpretada]**
 El usuario quiere identificar municipios afectados simultáneamente, en las últimas 24 horas, por focos de calor detectados por satélite y por situaciones de viento fuerte. La condición "viento fuerte" se reinterpreta como "aviso AEMET por fenómeno de viento vigente", dado que el visor no dispone de mediciones de viento.
 
 **[Operaciones Geoespaciales]**
 
-- Capas: focos activos NASA FIRMS y EFFIS, avisos AEMET vigentes filtrados por fenómeno = viento, núcleos de población IGN.
+- Capas: focos activos NASA FIRMS, avisos AEMET vigentes filtrados por fenómeno = viento, núcleos de población IGN.
 - Filtros temporales: ventana móvil de 24 horas hacia atrás desde el instante de la consulta.
 - Operaciones espaciales: intersección espacial de focos con polígonos de avisos por viento; agregación por municipio mediante intersección con núcleos de población o con la capa administrativa de referencia.
 - Tools invocadas: `queryFires` con `DAY_RANGE=1`; `queryAlerts` con `phenomenon="viento"` y `status="vigente"`; cruce espacial implícito en la tool de agregación municipal.
@@ -208,7 +205,7 @@ El usuario solicita una predicción futura de eventos de incendio. La consulta e
 No se ejecuta ninguna operación: la pregunta viola la limitación "no realizas predicciones futuras".
 
 **[Resultados]**
-No se devuelven resultados predictivos. Se ofrece, como alternativa razonable, información que sí está disponible y puede ayudar a contextualizar el riesgo: (a) índice meteorológico de peligro de incendio FWI más reciente disponible para la zona consultada, (b) índice de sequía DC más reciente, (c) últimos focos detectados por FIRMS y EFFIS y (d) histórico FIRMS comparable de años anteriores en la misma ventana del calendario.
+No se devuelven resultados predictivos. Se ofrece, como alternativa razonable, información que sí está disponible y puede ayudar a contextualizar el riesgo: (a) índice meteorológico de peligro de incendio FWI más reciente disponible para la zona consultada, (b) índice de sequía DC más reciente, (c) últimos focos detectados por FIRMS y (d) histórico FIRMS comparable de años anteriores en la misma ventana del calendario.
 
 **[Interpretación para Emergencias]**
 La pregunta no puede responderse con los datos del visor. Se invita al usuario a consultar fuentes oficiales de predicción meteorológica (AEMET) y de peligrosidad de incendio (EFFIS) para obtener valoraciones a corto plazo. El asistente puede preparar una vista temática de FWI y sequía sobre la zona indicada para apoyar esa lectura.
@@ -259,25 +256,25 @@ Ficha del foco con sensor, hora UTC, FRP, confianza, coordenadas y clase CORINE 
 **[Interpretación para Emergencias]**
 La intensidad radiativa (FRP) sirve como proxy de actividad del frente; el uso del suelo aporta contexto sobre el material disponible. Un foco intenso en zona forestal tiene implicaciones operativas distintas a uno en zona agrícola o urbana.
 
-### 5.3 Compara los focos FIRMS y EFFIS detectados ayer
+### 5.3 ¿Por qué el visor usa focos FIRMS y no focos EFFIS?
 
-*Aprovecha la coexistencia de ambas fuentes vectoriales en el prototipo. Apoya la línea de trabajo del TFG sobre contraste entre fuentes.*
+*Caso de explicación trazable de una decisión de alcance del prototipo.*
 
 **[Consulta Interpretada]**
-El usuario quiere ver simultáneamente las detecciones de NASA FIRMS y de EFFIS / Copernicus para el día anterior, identificando coincidencias y discrepancias.
+El usuario pide justificar la elección de fuente para los focos activos del visor.
 
 **[Operaciones Geoespaciales]**
 
-- Capas: focos FIRMS activos del día anterior y focos EFFIS vectorizados disponibles.
-- Filtros temporales: día natural anterior a la consulta.
-- Operaciones espaciales: superposición de capas; cálculo de coincidencias por proximidad (umbral de 1 km configurable) entre puntos FIRMS y centroides EFFIS.
-- Tools invocadas: `queryFires` y consulta a `/api/effis/wmts`; `compareFirmsEffis` con la fecha objetivo.
+- Capas: no se activa una capa EFFIS de focos; se consulta la nota de decisión del proyecto.
+- Filtros temporales: no aplica.
+- Operaciones espaciales: explicación de alcance basada en la comparativa previa y en los contratos de datos disponibles.
+- Tools invocadas: `explainTerm("decisión FIRMS frente a EFFIS")` o consulta documental equivalente.
 
 **[Resultados]**
-Mapa con dos simbologías diferenciadas y resumen textual con (a) número de detecciones FIRMS, (b) número de detecciones EFFIS, (c) número de coincidencias dentro del umbral y (d) listado de detecciones únicas por cada fuente.
+Resumen textual indicando que EFFIS/Copernicus se evaluó como fuente de focos, pero la integración disponible dependía de teselas rasterizadas y vectorización local por píxeles. El visor mantiene NASA FIRMS porque expone detecciones puntuales con atributos operativos como hora, sensor, confianza y FRP.
 
 **[Interpretación para Emergencias]**
-Las fuentes tienen sensores, ventanas de paso y umbrales distintos: comparar ambas reduce el riesgo de pasar por alto un foco real. Las coincidencias refuerzan la confianza en la detección; las discrepancias merecen revisión.
+La decisión evita mezclar puntos FIRMS con entidades derivadas visualmente de una imagen. EFFIS se conserva como contexto meteorológico mediante FWI y DC, mientras que FIRMS queda como fuente única de focos activos.
 
 ### 5.4 Evolución diaria de superficie quemada en Castilla y León entre el 10 y el 20 de agosto de 2025
 
@@ -328,7 +325,7 @@ El usuario solicita un panorama agregado de la situación nacional de incendios 
 
 **[Operaciones Geoespaciales]**
 
-- Capas: focos activos FIRMS, focos EFFIS, avisos AEMET vigentes que puedan estar relacionados con riesgo de incendio (calor, viento, sequía si existieran).
+- Capas: focos activos FIRMS, avisos AEMET vigentes que puedan estar relacionados con riesgo de incendio (calor, viento, sequía si existieran), FWI y DC como contexto.
 - Filtros temporales: día actual.
 - Operaciones espaciales: agregación por comunidad autónoma; cálculo de FRP máximo nacional; recuento de focos por sensor.
 - Tools invocadas: `summarizeSituation(scope="nacional", topic="incendios")`.

@@ -151,7 +151,7 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 
 ## Datos explícitos
 
-- El proyecto MeteoVisor ya integra avisos AEMET, focos NASA FIRMS, EFFIS, CORINE, núcleos de población, burnt area Copernicus e histórico FIRMS persistido en PostGIS.
+- El proyecto MeteoVisor ya integra avisos AEMET, focos NASA FIRMS, FWI/DC de EFFIS, CORINE, núcleos de población, burnt area Copernicus e histórico FIRMS persistido en PostGIS.
 - El frontend ya expone primitivas Leaflet para mover el mapa, activar capas WMS, alternar núcleos, aplicar filtros y abrir fichas.
 - Los requisitos RF-46 a RF-73 dedican una sección entera a la interfaz conversacional con LLM.
 - La nota de objetivos del TFG limita el papel del LLM a interfaz de consulta con trazabilidad, no a sistema de decisión.

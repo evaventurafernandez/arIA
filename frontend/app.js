@@ -152,7 +152,6 @@ resetBtn.addTo(map);
 
 // ── WMS ────────────────────────────────────────────────────────────────────
 const EFFIS_URL = 'https://maps.effis.emergency.copernicus.eu/effis';
-const EFFIS_FIRES_URL = '/api/effis/wmts';
 const SPAIN_BOUNDARY_URL = '/api/boundaries/spain';
 const LANDCOVER_WMS_CRS = L.CRS.EPSG4326;
 
@@ -191,13 +190,6 @@ const NUCLEOS_MIN_ZOOM = 8;
 const HISTORICAL_DATA_FETCH_OPTIONS = { cache: 'force-cache' };
 
 const WMS_DEFS = {
-  effis_fires: {
-    url:     EFFIS_FIRES_URL,
-    type:    'geojson',
-    layer:   'effis_viirs_hs_today_wfs', // focos calientes EFFIS/Copernicus vectorizados
-    time:    null,
-    opacity: 0.85,
-  },
   effis_fwi: {
     url:     EFFIS_URL,
     layer:   'mf010.fwi',        // Fire Weather Index: peligro meteorológico de incendio - diario
@@ -391,66 +383,8 @@ const SpainClippedWMSLayer = L.TileLayer.WMS.extend({
   },
 });
 
-function buildEffisFiresGeoJSON(d) {
-  const layer = L.geoJSON(null, {
-    pointToLayer: (feature, latlng) => {
-      const p = feature.properties || {};
-      const color = p.avg_color || '#ff0000';
-      const radius = Math.max(4, Math.min(10, Math.sqrt(Number(p.pixel_count) || 16) / 2));
-      return L.circleMarker(latlng, {
-        radius,
-        color: '#7f0000',
-        fillColor: color,
-        fillOpacity: d.opacity,
-        weight: 1,
-      });
-    },
-    onEachFeature: (feature, layer) => {
-      const p = feature.properties || {};
-      const coords = feature.geometry?.coordinates || [];
-      const lon = Number(coords[0]);
-      const lat = Number(coords[1]);
-      const location = Number.isFinite(lat) && Number.isFinite(lon)
-        ? `${lat.toFixed(4)}, ${lon.toFixed(4)}`
-        : 'Coordenadas no disponibles';
-      layer.bindTooltip(
-        `<b>Foco EFFIS/Copernicus</b><br>${location}<br>` +
-        `Píxeles detectados: ${p.pixel_count ?? 'n/d'}<br>` +
-        `Color medio: ${p.avg_color || 'n/d'}`,
-        { sticky: true }
-      );
-    },
-  });
-
-  fetch(d.url, { cache: 'no-store' })
-    .then(r => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
-    })
-    .then(data => layer.addData(data))
-    .catch(e => console.error('Error cargando EFFIS GeoJSON:', e));
-
-  return layer;
-}
-
 function buildWMS(key) {
   const d = WMS_DEFS[key];
-  if (d.type === 'geojson') {
-    return buildEffisFiresGeoJSON(d);
-  }
-  if (d.type === 'wmts') {
-    const url =
-      `${d.url}/${d.layer}/{z}/{y}/{x}.png`;
-
-    return L.tileLayer(url, {
-      opacity: d.opacity,
-      bounds: SPAIN_BOUNDS,
-      pane: WMS_LAYER_PANE,
-      minZoom: d.minZoom,
-      maxZoom: d.maxZoom || 18,
-    });
-  }
-
   const ver = d.version || '1.1.1';
   const opts = {
     layers:      d.layer,
@@ -520,15 +454,6 @@ function formatEffisIndexRange(effisClass, indexName) {
 
 // Leyenda WMS
 const WMS_LEGENDS = {
-  effis_fires: {
-    title: 'Focos activos VIIRS (EFFIS)',
-    items: [
-      { color: '#ff66cc', label: 'Menos de 6 h' },
-      { color: '#ff9999', label: '6 a 12 h' },
-      { color: '#ff0000', label: '12 a 24 h' },
-    ],
-    note: 'Copernicus EFFIS - últimos 1 día'
-  },
   effis_fwi: {
     title: 'Peligro de incendio FWI (EFFIS)',
     items: EFFIS_FIRE_DANGER_FWI_CLASSES.map(c => ({
@@ -3846,7 +3771,7 @@ function fmtDate(iso) {
 }
 
 // Listeners WMS y capas de datos 
-['effis_fires','flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
+['flood','effis_fwi','effis_dc','corine_wms'].forEach(key => {
   const el = document.getElementById('chk-' + key);
   if (el) el.addEventListener('change', e => toggleWMS(key, e.target.checked));
 });

@@ -54,12 +54,16 @@ La descarga usa el endpoint oficial de archivo CAP por rango de elaboración, gu
    venv\Scripts\python.exe infra/ingest/import_aemet_warnings_source.py --date-from 2025-05-01 --date-to 2025-08-31 --elaboration-lookback-days 3
    ```
 
-4. Reconstruye `core` y la vista diaria optimizada:
+   Si un bloque ya está importado y el archivo fuente no cambió, el importador lo omite para no borrar/reinsertar filas referenciadas desde `core`. Para reconstruir explícitamente esos bloques usa `--force-reimport`.
+
+4. Actualiza `core` y la capa diaria optimizada:
 
    ```bash
    docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_core.sql
    docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_aemet_warnings_pub.sql
    ```
+
+   Estos refrescos consumen las colas `ingest.aemet_warning_refresh_key` e `ingest.aemet_warning_refresh_date`: `core` solo recalcula las claves CAP/zona importadas o reimportadas, y `pub` solo borra/inserta las fechas válidas afectadas. Si las tablas de destino están vacías, los scripts siembran automáticamente una carga inicial completa.
 
 5. Publica la serie diaria país:
 
@@ -85,13 +89,19 @@ El script crea la carpeta de primer nivel `\TFG\` en el Programador de tareas y 
 - `AEMET calor 04 refresh pub`
 - `AEMET calor 05 publica estadisticas`
 
-Por defecto el primer paso arranca a las `01:00` y los siguientes se espacian `15` minutos. Se puede ajustar así:
+Por defecto el primer paso arranca a las `01:00`, los siguientes se espacian `15` minutos y cada tarea tiene un límite de ejecución de `6` horas. Se puede ajustar así:
 
 ```powershell
-.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20
+.\infra\ingest\register_aemet_daily_tasks.ps1 -StartTime 01:00 -StepSpacingMinutes 20 -ExecutionTimeLimitHours 6
 ```
 
-Cada tarea ejecuta `infra/ingest/run_aemet_daily_step.ps1` y deja logs en `data-store/logs/scheduled-tasks/aemet`.
+Cada tarea ejecuta `infra/ingest/run_aemet_daily_step.ps1` y deja logs en `data-store/logs/scheduled-tasks/aemet`. El runner escribe marcadores en `data-store/logs/scheduled-tasks/aemet/state` para que, si Windows lanza varios pasos atrasados a la vez con `StartWhenAvailable`, cada paso espere a que el anterior haya terminado correctamente. Para una ejecución manual completa y secuencial se puede usar:
+
+```powershell
+.\infra\ingest\run_aemet_daily_step.ps1 -Step pipeline
+```
+
+Para ejecutar un paso aislado sin esperar marcadores previos, añade `-SkipDependencyWait`.
 
 ## Pipeline histórico FIRMS
 
