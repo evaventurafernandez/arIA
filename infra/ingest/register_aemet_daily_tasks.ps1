@@ -110,6 +110,9 @@ foreach ($Definition in $Definitions) {
     $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime
     $Settings = New-ScheduledTaskSettingsSet `
         -StartWhenAvailable `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -WakeToRun `
         -MultipleInstances IgnoreNew `
         -ExecutionTimeLimit (New-TimeSpan -Hours $ExecutionTimeLimitHours)
 
