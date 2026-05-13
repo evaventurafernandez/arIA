@@ -167,7 +167,6 @@ function Invoke-LoggedCommand {
     $global:LASTEXITCODE = 0
 
     $PreviousErrorActionPreference = $ErrorActionPreference
-    $InvocationError = $null
     try {
         # Native tools such as psql write NOTICE/WARNING messages to stderr even
         # when they exit successfully. Log that stream, but let the exit code
@@ -176,9 +175,6 @@ function Invoke-LoggedCommand {
         & $FilePath @Arguments 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
                 $Text = $_.Exception.Message
-                if ($_.FullyQualifiedErrorId -ne "NativeCommandError") {
-                    $InvocationError = $_
-                }
             }
             else {
                 $Text = ($_ | Out-String).TrimEnd()
@@ -191,10 +187,6 @@ function Invoke-LoggedCommand {
     }
     finally {
         $ErrorActionPreference = $PreviousErrorActionPreference
-    }
-
-    if ($InvocationError) {
-        throw $InvocationError.Exception.Message
     }
 
     $ExitCode = [int]$global:LASTEXITCODE
