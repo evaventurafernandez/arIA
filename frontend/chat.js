@@ -236,7 +236,10 @@ class ChatClient {
     const div = this.appendMessage('assistant', '');
     div.innerHTML =
       '<div class="chat-block chat-block-streaming">' +
-        '<div class="chat-block-title">Procesando consulta...</div>' +
+        '<div class="chat-block-title chat-loading-title">' +
+          '<span class="chat-loading-spinner" aria-hidden="true"></span>' +
+          '<span>Procesando consulta...</span>' +
+        '</div>' +
         '<div class="chat-block-body" data-streaming-body></div>' +
       '</div>' +
       '<details class="chat-trace" data-streaming-trace hidden>' +
@@ -272,13 +275,16 @@ class ChatClient {
     uiState.trace.hidden = false;
     uiState.traceItems += 1;
     uiState.traceCount.textContent = String(uiState.traceItems);
-    const cls = status === 'ok' ? '' : (status === 'pending' ? '' : ' failed');
+    const cls = status === 'ok' ? '' : (status === 'pending' ? ' pending' : ' failed');
+    const summaryHtml = status === 'pending'
+      ? '<span class="chat-inline-loader" aria-hidden="true"></span><span>Ejecutando operación...</span>'
+      : chatEscapeHtml(summary || '');
     const div = document.createElement('div');
     div.className = 'chat-trace-entry' + cls;
     div.innerHTML =
       '<div><strong>' + chatEscapeHtml(tool) + '</strong>(' +
         chatEscapeHtml(JSON.stringify(args || {})) + ')</div>' +
-      '<div>' + chatEscapeHtml(summary || '') + '</div>';
+      '<div class="chat-trace-status' + (status === 'pending' ? ' pending' : '') + '">' + summaryHtml + '</div>';
     uiState.traceEntries.appendChild(div);
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     return div;
@@ -431,10 +437,13 @@ class ChatClient {
       const status = payload.ok ? 'ok' : 'failed';
       const summary = payload.ok ? (payload.result_summary || 'OK') : (payload.error || 'error');
       if (div) {
-        div.classList.remove('failed');
+        div.classList.remove('failed', 'pending');
         if (!payload.ok) div.classList.add('failed');
         const bodies = div.querySelectorAll('div');
-        if (bodies.length >= 2) bodies[1].textContent = summary;
+        if (bodies.length >= 2) {
+          bodies[1].classList.remove('pending');
+          bodies[1].textContent = summary;
+        }
       } else {
         this.addTraceEntry(uiState, payload.tool, {}, status, summary);
       }
