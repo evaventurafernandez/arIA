@@ -24,7 +24,7 @@ pendientes_de_verificar:
   - "Confirmar que se considera elaboración propia del autor del TFG."
   - "Confirmar el modelo local concreto a usar y el hardware disponible para servirlo."
   - "Validar con el profesor el alcance: si el TFG defenderá Fase 1 (preparación técnica del LLM) o Fase 2 (asistente operativo básico)."
-  - "Decidir el catálogo final de tools antes de implementar el endpoint /api/assistant/chat."
+  - "Mantener actualizada la lista de tools ya materializadas frente al catálogo teórico inicial."
   - "Decidir si las tools del visor se exponen como endpoint propietario, como servidor MCP local, o ambos."
 ---
 
@@ -73,8 +73,9 @@ Cobertura aproximada de RF-50, RF-51, RF-52, RF-57. El LLM lee el resultado de u
 
 Cobertura aproximada de RF-17, RF-25, RF-32, RF-60. El LLM no calcula geometría: encadena llamadas a tools que ejecutan operaciones PostGIS.
 
-- Avisos hidrometeorológicos que intersectan zona inundable T10 cerca de núcleos.
+- Avisos hidrometeorológicos que intersectan zona inundable T10 cerca de núcleos, pendiente de ingestar geometría vectorial local de la capa T10.
 - Focos en zona forestal a menos de un umbral configurable de un núcleo de población.
+- Focos activos a menos de un umbral configurable de núcleos por debajo de un máximo de habitantes, materializado como `activeFiresNearPopulation`.
 - Exploración del histórico FIRMS por fecha y comparativa de períodos sobre `/api/firms/history/...`.
 - Contextualización de focos con uso del suelo, apoyándose en la consulta puntual ya existente vía GetFeatureInfo del IGN.
 
@@ -95,14 +96,14 @@ Cobertura aproximada de RF-43, RF-45, RF-58.
 
 ### Arquitectura mínima recomendada
 
-1. **Catálogo de tools** declarado como JSON Schema, con entre 10 y 15 funciones del estilo `flyTo`, `toggleLayer`, `setFilter`, `queryFires`, `queryAlerts`, `crossAlertsFloodT10`, `summarizeSituation`, `getFeatureDetail`, `searchPlace`. El catálogo es la frontera dura de lo que el LLM puede pedir.
+1. **Catálogo de tools** declarado como JSON Schema, con funciones del estilo `flyTo`, `toggleLayer`, `setVisibleLayers`, `setFilter`, `showGeoJsonResults`, `setLayerDate`, `queryFires`, `queryAlerts`, `activeFiresNearPopulation`, `summarizeSituation`, `getFeatureDetail`, `searchPlace`. El catálogo es la frontera dura de lo que el LLM puede pedir. Las operaciones previstas pero no ejecutables con datos locales, como `crossAlertsFloodT10`, se documentan como rechazo controlado hasta que exista geometría vectorial local.
 2. **Servidor LLM local** con tool calling, expuesto al backend FastAPI. Camino corto razonable: Ollama + Qwen2.5-7B-Instruct con interfaz OpenAI-compatible.
 3. **Endpoint nuevo** `POST /api/assistant/chat` que recibe la consulta, llama al LLM, valida cada tool call contra el catálogo y la ejecuta sobre el visor o la base de datos.
 4. **Validador** que rechaza tools desconocidas, parámetros fuera de rango o referencias a capas no autorizadas. Cubre RF-63 prácticamente gratis.
 5. **Logging persistente** por interacción con `{prompt, intent, tool_calls, payload, response, timestamp}`. Cubre RF-64 y RF-73.
 6. **Panel de chat** en el frontend con un bloque "Acciones realizadas" en cada respuesta, mostrando las tools invocadas y los datos consultados. Cubre RF-50 y RF-56.
 
-Con esta arquitectura, una consulta como "muéveme el mapa a Cáceres y enséñame focos de hoy con FWI" se descompone en algo del estilo `[searchPlace("Cáceres"), flyTo(bbox), toggleLayer("fwi", true), queryFires({date: "today"})]`, sin que el LLM toque coordenadas crudas ni datos de la base.
+Con esta arquitectura, una consulta como "muéveme el mapa a Cáceres y enséñame focos de hoy con FWI" se descompone en algo del estilo `[searchPlace("Cáceres"), flyTo(bbox), toggleLayer("fwi", true), queryFires({date: "today"})]`, sin que el LLM toque coordenadas crudas ni datos de la base. Una consulta como "hay núcleos de menos de 5.000 habitantes a menos de 2 km de focos activos" se resuelve mediante `activeFiresNearPopulation`, y el resultado espacial se envía al mapa mediante `showGeoJsonResults` sin que el LLM tenga que transportar el GeoJSON completo.
 
 ### Variante: exponer las tools como servidor MCP
 
@@ -153,6 +154,7 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 
 - El proyecto MeteoVisor ya integra avisos AEMET, focos NASA FIRMS, FWI/DC de EFFIS, CORINE, núcleos de población, burnt area Copernicus e histórico FIRMS persistido en PostGIS.
 - El frontend ya expone primitivas Leaflet para mover el mapa, activar capas WMS, alternar núcleos, aplicar filtros y abrir fichas.
+- El patrón `map_geojson` → `showGeoJsonResults` permite que una tool server-side devuelva resultados cartográficos temporales sin crear capas persistentes nuevas.
 - Los requisitos RF-46 a RF-73 dedican una sección entera a la interfaz conversacional con LLM.
 - La nota de objetivos del TFG limita el papel del LLM a interfaz de consulta con trazabilidad, no a sistema de decisión.
 - CARTO ha publicado un servidor MCP que expone más de 200 componentes geoespaciales como tools consumibles por agentes compatibles con MCP (Claude, ChatGPT, Gemini, Cursor), manteniendo los datos en el data warehouse del cliente.
@@ -171,7 +173,7 @@ Para el TFG, un alcance defendible parece ser Fase 1 cerrada y Nivel 1 + Nivel 2
 
 - Hardware disponible para servir el modelo en local y restricciones de latencia aceptables.
 - Modelo concreto que se va a usar en el prototipo final.
-- Catálogo definitivo de tools y nombres exactos de cada operación.
+- Catálogo definitivo de tools y nombres exactos de cada operación. Nombres ya materializados relevantes para esta nota: `activeFiresNearPopulation`, `setVisibleLayers`, `showGeoJsonResults`, `setLayerDate`.
 - Si el TFG defenderá Fase 1 cerrada o Fase 2 demostrable.
 - Cómo se va a validar la calidad del asistente de cara al tribunal: episodios reales, casos de uso predefinidos o evaluación cualitativa.
 - Si las tools se expondrán como endpoint propietario, como servidor MCP local o como ambos.

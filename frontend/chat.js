@@ -1,7 +1,8 @@
 // ============================================================================
 // Chat LLM (Fase 2): panel flotante + window.chatTools + clase ChatClient.
 // El panel envia mensajes a POST /api/chat, renderiza los 4 bloques y ejecuta
-// las client_actions devueltas (flyTo / toggleLayer / setFilter / getFeatureDetail).
+// las client_actions devueltas (flyTo / toggleLayer / setVisibleLayers /
+// setFilter / showGeoJsonResults / getFeatureDetail).
 //
 // Depende de app.js (acceso a `map`, `zoomToAlert`, los checkboxes del sidebar
 // y los botones de filtro de nivel).
@@ -20,6 +21,8 @@ const CHAT_LAYER_CHECKBOX = {
   flood: 'chk-flood',
   corine_wms: 'chk-corine_wms',
 };
+
+let chatResultsLayer = null;
 
 function chatToolFlyTo(args) {
   args = args || {};
@@ -57,6 +60,15 @@ function chatToolToggleLayer(args) {
   return true;
 }
 
+function chatToolSetVisibleLayers(args) {
+  args = args || {};
+  const wanted = new Set(Array.isArray(args.names) ? args.names : []);
+  Object.keys(CHAT_LAYER_CHECKBOX).forEach(function (name) {
+    chatToolToggleLayer({ name: name, on: wanted.has(name) });
+  });
+  return true;
+}
+
 function chatToolSetFilter(args) {
   args = args || {};
   if (args.field === 'level' && Array.isArray(args.value)) {
@@ -78,6 +90,62 @@ function chatToolSetFilter(args) {
   return false;
 }
 
+function chatResultColor(kind) {
+  if (kind === 'fire') return '#cc3d2b';
+  if (kind === 'population') return '#267c8f';
+  if (kind === 'distance') return '#e4a11b';
+  return '#5b6ee1';
+}
+
+function chatToolShowGeoJsonResults(args) {
+  args = args || {};
+  const geojson = args.geojson;
+  if (!geojson || geojson.type !== 'FeatureCollection') return false;
+  if (args.clear_existing !== false && chatResultsLayer) {
+    map.removeLayer(chatResultsLayer);
+    chatResultsLayer = null;
+  }
+
+  chatResultsLayer = L.geoJSON(geojson, {
+    pointToLayer: function (feature, latlng) {
+      const props = feature.properties || {};
+      const color = chatResultColor(props.kind);
+      return L.circleMarker(latlng, {
+        radius: props.kind === 'fire' ? 7 : 6,
+        color: color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: props.kind === 'fire' ? 0.85 : 0.65,
+      });
+    },
+    style: function (feature) {
+      const props = feature.properties || {};
+      const color = chatResultColor(props.kind);
+      return {
+        color: color,
+        weight: props.kind === 'distance' ? 3 : 2,
+        opacity: 0.9,
+        fillColor: color,
+        fillOpacity: 0.16,
+        dashArray: props.kind === 'distance' ? '6 5' : null,
+      };
+    },
+    onEachFeature: function (feature, layer) {
+      const props = feature.properties || {};
+      const label = props.label || args.title || 'Resultado';
+      layer.bindTooltip(chatEscapeHtml(label), { sticky: true });
+    },
+  }).addTo(map);
+
+  if (args.fit !== false) {
+    const bounds = chatResultsLayer.getBounds();
+    if (bounds && bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [44, 44] });
+    }
+  }
+  return true;
+}
+
 function chatToolGetFeatureDetail(args) {
   args = args || {};
   if (args.layer === 'alerts' && args.id) {
@@ -87,11 +155,23 @@ function chatToolGetFeatureDetail(args) {
   return false;
 }
 
+async function chatToolSetLayerDate(args) {
+  args = args || {};
+  const layer = args.layer;
+  const date = args.date;
+  if (!layer || !date) return false;
+  if (typeof showHistoricalLayerAtDate !== 'function') return false;
+  return showHistoricalLayerAtDate(layer, date);
+}
+
 window.chatTools = {
   flyTo: chatToolFlyTo,
   toggleLayer: chatToolToggleLayer,
+  setVisibleLayers: chatToolSetVisibleLayers,
   setFilter: chatToolSetFilter,
+  showGeoJsonResults: chatToolShowGeoJsonResults,
   getFeatureDetail: chatToolGetFeatureDetail,
+  setLayerDate: chatToolSetLayerDate,
 };
 
 // ----- Render minimal de texto a HTML (escape + negrita + saltos) -----
@@ -242,8 +322,14 @@ class ChatClient {
     actions.forEach(function (ca) {
       const handler = window.chatTools[ca.action];
       if (typeof handler === 'function') {
-        try { handler(ca.arguments || {}); }
-        catch (err) { console.error('chatTool failed', ca, err); }
+        try {
+          const result = handler(ca.arguments || {});
+          if (result && typeof result.then === 'function') {
+            result.catch(function (err) {
+              console.error('chatTool async failed', ca, err);
+            });
+          }
+        } catch (err) { console.error('chatTool failed', ca, err); }
       } else {
         console.warn('chatTool desconocida', ca);
       }

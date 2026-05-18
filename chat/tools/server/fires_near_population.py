@@ -2,7 +2,7 @@
 
 Cruza `core.firms_hotspot` con `core.nucleos_poblacion_polygon` usando
 ST_DWithin sobre geography (metros). FIRMS activos NO se cubren aqui: para
-'cerca' en tiempo real haria falta otra ruta (su geometria no esta en BD).
+'cerca' en tiempo real usar `activeFiresNearPopulation`.
 """
 
 from __future__ import annotations
@@ -55,8 +55,8 @@ SCHEMA = {
         "poblacion del IGN, en un rango de fechas. Cobertura del historico: "
         "mayo-agosto 2025. La consulta usa ST_DWithin sobre geography "
         "(metros reales, no grados). Util para evaluar exposicion poblacional "
-        "retrospectiva. NO opera sobre focos activos en vivo (esos no estan "
-        "en la BD); si el usuario quiere 'hoy', proponle queryFires + bbox."
+        "retrospectiva. NO opera sobre focos activos en vivo; si el usuario "
+        "quiere 'hoy' o 'activo', usa activeFiresNearPopulation."
     ),
     parameters=SCHEMA,
 )

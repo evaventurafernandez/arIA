@@ -2964,6 +2964,53 @@ function setHistoricalFiresFrame(index, forceReload = false) {
   return setHistoricalTimelineFrame(index, forceReload);
 }
 
+// Activa la capa historica indicada (si no lo estaba) y posiciona el slider
+// del timeline unificado en la fecha solicitada. Hace todo el trabajo en una
+// sola pasada para evitar carreras entre el frame por defecto que aplica el
+// toggle y un reposicionamiento posterior. Llamado por el chat (setLayerDate)
+// y reutilizable desde cualquier otra integracion externa.
+const HISTORICAL_LAYER_DESCRIPTORS = {
+  burnt_area: {
+    checkboxId: 'chk-burnt_area_daily',
+    toggleFn: () => toggleBurntAreaLayer,
+    timeline: () => burntAreaTimeline,
+  },
+  firms_history: {
+    checkboxId: 'chk-firms_history',
+    toggleFn: () => toggleHistoricalFiresLayer,
+    timeline: () => historicalFiresTimeline,
+  },
+  aemet_max_temp_history: {
+    checkboxId: 'chk-aemet_max_temp_history',
+    toggleFn: () => toggleAemetMaxTempLayer,
+    timeline: () => aemetMaxTempTimeline,
+  },
+};
+
+async function showHistoricalLayerAtDate(layer, dateString) {
+  const descriptor = HISTORICAL_LAYER_DESCRIPTORS[layer];
+  if (!descriptor || !dateString) return false;
+  const toggleFn = descriptor.toggleFn();
+  if (typeof toggleFn !== 'function') return false;
+
+  const cb = document.getElementById(descriptor.checkboxId);
+  if (cb) cb.checked = true;
+  // Llamamos al toggle directamente y esperamos a que termine: asi cuando
+  // continuemos, el timeline esta cargado y el frame por defecto ya se ha
+  // aplicado. Cualquier frame posterior que nosotros mismos pongamos sera
+  // el ultimo escritor sobre historicalTimelineIndex y, por tanto, el que
+  // gane.
+  await toggleFn(true);
+
+  if (historicalTimeline.indexOf(dateString) < 0 && typeof rebuildHistoricalTimeline === 'function') {
+    rebuildHistoricalTimeline(dateString);
+  }
+  const idx = historicalTimeline.indexOf(dateString);
+  if (idx < 0) return false;
+  await setHistoricalTimelineFrame(idx, true);
+  return true;
+}
+
 function resetHistoricalTimeline() {
   stopHistoricalTimelinePlayback();
   void setHistoricalTimelineFrame(0);

@@ -98,6 +98,31 @@ client_tool(
 
 
 client_tool(
+    name="setVisibleLayers",
+    description=(
+        "Define exactamente que capas del visor quedan visibles y apaga el resto "
+        "del catalogo cerrado. Usar cuando el usuario pida 'muestra unicamente "
+        "las capas utilizadas', 'solo estas capas' o una vista limpia de una "
+        "consulta."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string", "enum": LAYER_NAMES},
+                "uniqueItems": True,
+                "maxItems": len(LAYER_NAMES),
+                "description": "Lista exacta de capas que deben quedar encendidas.",
+            },
+        },
+        "required": ["names"],
+        "additionalProperties": False,
+    },
+)
+
+
+client_tool(
     name="setFilter",
     description=(
         "Aplica un filtro existente del visor. 'level' acepta una lista con "
@@ -121,6 +146,109 @@ client_tool(
             },
         },
         "required": ["field", "value"],
+        "additionalProperties": False,
+    },
+)
+
+
+client_tool(
+    name="showGeoJsonResults",
+    description=(
+        "Dibuja una capa temporal de resultados calculados por una tool de datos. "
+        "Debe usarse con el campo map_geojson devuelto por tools espaciales como "
+        "activeFiresNearPopulation. Puede limpiar resultados anteriores y ajustar "
+        "el encuadre al GeoJSON."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Titulo breve de la capa temporal de resultados.",
+                "maxLength": 80,
+            },
+            "geojson": {
+                "type": "object",
+                "description": "FeatureCollection GeoJSON con puntos, lineas o poligonos de resultado.",
+                "properties": {
+                    "type": {"type": "string", "enum": ["FeatureCollection"]},
+                    "features": {
+                        "type": "array",
+                        "maxItems": 1000,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["Feature"]},
+                                "geometry": {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "enum": ["Point", "LineString", "Polygon", "MultiPolygon"],
+                                        },
+                                        "coordinates": {},
+                                    },
+                                    "required": ["type", "coordinates"],
+                                    "additionalProperties": False,
+                                },
+                                "properties": {"type": "object"},
+                            },
+                            "required": ["type", "geometry", "properties"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["type", "features"],
+                "additionalProperties": False,
+            },
+            "fit": {
+                "type": "boolean",
+                "description": "Si true, encuadra el mapa a los resultados.",
+                "default": True,
+            },
+            "clear_existing": {
+                "type": "boolean",
+                "description": "Si true, borra la capa temporal anterior antes de dibujar.",
+                "default": True,
+            },
+        },
+        "required": ["geojson"],
+        "additionalProperties": False,
+    },
+)
+
+
+DATED_LAYER_NAMES = [
+    "burnt_area",
+    "firms_history",
+    "aemet_max_temp_history",
+]
+
+
+client_tool(
+    name="setLayerDate",
+    description=(
+        "Mueve el slider temporal de una capa historica del visor a una fecha "
+        "concreta (YYYY-MM-DD). Aplica a 'burnt_area', 'firms_history' y "
+        "'aemet_max_temp_history'. Si la capa no esta visible, el frontend la "
+        "activa primero. Usar cuando la respuesta apunte a un dia concreto "
+        "(pico de area quemada, dia con mas focos, etc.)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "layer": {
+                "type": "string",
+                "enum": DATED_LAYER_NAMES,
+                "description": "Capa con timeline. Solo se admiten capas temporales.",
+            },
+            "date": {
+                "type": "string",
+                "pattern": r"^\d{4}-\d{2}-\d{2}$",
+                "description": "Fecha YYYY-MM-DD a la que mover el slider.",
+            },
+        },
+        "required": ["layer", "date"],
         "additionalProperties": False,
     },
 )

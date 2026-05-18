@@ -114,7 +114,10 @@ Los ejemplos de la Sección 4 invocan tools de un catálogo cerrado. La lista no
 
 - `flyTo(region | bbox | feature_id)`: centra el mapa en una región nombrada, un bounding box o una feature concreta.
 - `toggleLayer(name, on)`: activa o desactiva una capa del visor.
+- `setVisibleLayers(names)`: deja visibles exactamente las capas indicadas y apaga el resto del catálogo.
 - `setFilter(field, value)`: aplica un filtro existente del visor (nivel de aviso, fenómeno, sensor, fecha).
+- `showGeoJsonResults(geojson, title?, fit?, clear_existing?)`: dibuja una capa temporal de resultados calculados por una tool de datos.
+- `setLayerDate(layer, date)`: mueve el timeline de una capa histórica a una fecha concreta.
 - `searchPlace(name)`: geocoder restringido a topónimos de España (provincias, municipios, comarcas).
 - `queryAlerts(filters)`: consulta avisos AEMET vigentes o históricos con filtros por fenómeno, severidad, fecha y zona.
 - `queryFires(filters)`: consulta focos activos o históricos NASA FIRMS con filtros por fecha, sensor y bbox.
@@ -122,8 +125,9 @@ Los ejemplos de la Sección 4 invocan tools de un catálogo cerrado. La lista no
 - `getFeatureDetail(layer, id)`: devuelve la ficha de un elemento concreto.
 - `landcoverAtPoint(lon, lat)`: clase CORINE en una coordenada vía GetFeatureInfo IGN.
 - `firesNearPopulation(date_range, distance_m)`: focos a menos de una distancia de núcleos de población.
-- `burntAreaIntersectPopulation(date_range)`: áreas quemadas que intersectan núcleos.
-- `crossAlertsFloodT10(date_range)`: avisos hidrometeorológicos que intersectan zonas inundables T=10.
+- `activeFiresNearPopulation(distance_m, population_max, filters?)`: focos activos a menos de una distancia de núcleos por debajo de un umbral de habitantes.
+- `burntAreaIntersectPopulation(date_range)`: operación prevista pero no ejecutable actualmente por falta de geometría vectorial de Burnt Area en PostGIS.
+- `crossAlertsFloodT10(date_range)`: operación prevista pero no ejecutable actualmente porque la capa T10 se consume como WMS externo sin geometría vectorial local.
 - `firmsHotspotAnalysis(region | bbox, date_from, date_to, sensor?)`: clusters de focos históricos FIRMS por densidad espacial.
 - `summarizeSituation(scope)`: resumen ejecutivo agregado por territorio o ventana temporal.
 - `explainTerm(term)`: definición y contexto operativo de un término del glosario (FRP, FWI, T10, etc.).
@@ -156,7 +160,7 @@ Los municipios con coincidencia simultánea concentran un riesgo operativo más 
 
 ### 4.2 Zonas urbanas cercanas a áreas forestales afectadas por incendios este verano
 
-*Pregunta original. Caso completamente resoluble con los datos disponibles: burnt area v4 cubre mayo-agosto 2025, núcleos de población IGN están cargados y CORINE permite identificar uso forestal.*
+*Pregunta original. Caso parcialmente resoluble con los datos actuales: Burnt Area v4 cubre mayo-agosto 2025 a escala agregada y CORINE/núcleos están disponibles, pero no existe geometría vectorial local de áreas quemadas que permita cruzar píxeles o polígonos quemados con núcleos.*
 
 **[Consulta Interpretada]**
 El usuario quiere localizar núcleos de población próximos a áreas que ardieron durante el verano de 2025 y que estaban clasificadas como forestales. El umbral de proximidad no se especifica; se asume 5 km salvo que el usuario aclare.
@@ -165,14 +169,14 @@ El usuario quiere localizar núcleos de población próximos a áreas que ardier
 
 - Capas: áreas quemadas Burnt Area v4 (mayo-agosto 2025), núcleos de población IGN, CORINE 2018 (clases forestales).
 - Filtros temporales: rango de fechas del verano 2025, ajustado al rango de cobertura disponible (2025-05-01 a 2025-08-31).
-- Operaciones espaciales: intersección de áreas quemadas con clases forestales de CORINE para retener únicamente superficie forestal afectada; buffer de 5 km sobre esas geometrías; intersección con núcleos de población.
-- Tools invocadas: `queryBurntArea` con `date_from=2025-05-01` y `date_to=2025-08-31`; `landcoverAtPoint` o un cruce equivalente sobre el subset CORINE forestal; `burntAreaIntersectPopulation` con buffer paramétrico.
+- Operaciones espaciales: no se ejecuta el cruce real áreas quemadas ↔ CORINE ↔ núcleos mientras Burnt Area no esté vectorizado localmente. Como alternativa, se muestra la evolución agregada de Burnt Area y se activan capas de contexto (`burnt_area`, `nucleos`, `corine_wms`) sin afirmar intersección.
+- Tools invocadas: `queryBurntArea` con `date_from=2025-05-01` y `date_to=2025-08-31`; acciones de visor para mostrar capas de contexto. `burntAreaIntersectPopulation` queda como operación prevista no ejecutable actualmente.
 
 **[Resultados]**
-Listado de núcleos con (a) distancia mínima al área quemada forestal más cercana, (b) superficie forestal quemada dentro del buffer, (c) fecha más reciente de quema en el entorno y (d) población cuando esté disponible en el atributo del IGN. Se ofrece exportación a CSV y opción de zoom al núcleo seleccionado.
+La respuesta devuelve superficie quemada agregada y evolución temporal disponible. No devuelve listado de núcleos próximos a polígonos quemados porque ese cruce requiere persistir geometría vectorial de Burnt Area.
 
 **[Interpretación para Emergencias]**
-La combinación de proximidad y carácter forestal del entorno quemado es un indicador de exposición acumulada del verano: ayuda a priorizar campañas de prevención y revisión de perímetros de protección. No es un indicador de riesgo futuro; es una lectura retrospectiva del verano 2025.
+La lectura agregada ayuda a contextualizar la severidad temporal del verano 2025, pero no permite concluir exposición directa de núcleos concretos. Para llegar a esa lectura haría falta una fase de ingesta/vectorización espacial adicional.
 
 ### 4.3 ¿Dónde coincidieron altas temperaturas y núcleos urbanos la semana pasada?
 
@@ -371,6 +375,27 @@ Listado y capa de focos cumpliendo el criterio, con núcleo más cercano, distan
 
 **[Interpretación para Emergencias]**
 Los focos en proximidad inmediata a núcleos son indicadores de exposición directa de población. Conviene cruzar después con tipología del núcleo (cuando exista atributo de habitantes) y con los avisos meteorológicos vigentes en esas fechas para reconstruir el contexto del episodio.
+
+### 5.9 ¿Hay algún núcleo de menos de 5.000 habitantes a menos de 2 km de un foco activo?
+
+*Caso operativo ya implementado sobre focos FIRMS activos y núcleos IGN persistidos en PostGIS.*
+
+**[Consulta Interpretada]**
+El usuario quiere saber si, en la situación actual, algún foco activo NASA FIRMS está a menos de 2 km de un núcleo de población con menos de 5.000 habitantes.
+
+**[Operaciones Geoespaciales]**
+
+- Capas: focos activos FIRMS y núcleos de población IGN.
+- Filtros: `population_max=5000`, `distance_m=2000`.
+- Operaciones espaciales: construcción de puntos temporales para focos activos; cruce con `core.nucleos_poblacion_polygon`; filtro con `ST_DWithin` sobre `geography`; cálculo de distancia con `ST_Distance`.
+- Tools invocadas: `activeFiresNearPopulation({distance_m: 2000, population_max: 5000})`.
+- Acciones de visor esperadas: `setVisibleLayers(["fires","nucleos"])` y `showGeoJsonResults(...)` para pintar puntos de foco, puntos de núcleo y líneas de distancia.
+
+**[Resultados]**
+Listado de pares foco-núcleo con identificador del foco, sensor, fecha/hora, FRP, núcleo más cercano, habitantes y distancia en metros. Si no hay coincidencias, se devuelve lista vacía y el mapa conserva solo las capas relevantes.
+
+**[Interpretación para Emergencias]**
+Los pares detectados indican exposición espacial inmediata de población pequeña a actividad térmica reciente. La lectura no sustituye evaluación operativa: FIRMS detecta anomalías térmicas satelitales y la distancia es geométrica, no una estimación de propagación ni de peligro futuro.
 
 ---
 

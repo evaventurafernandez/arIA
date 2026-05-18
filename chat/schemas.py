@@ -44,7 +44,7 @@ class ClientAction(BaseModel):
     """Accion que el frontend debe ejecutar tras recibir la respuesta."""
 
     id: str
-    action: str  # nombre de la tool cliente: flyTo, toggleLayer, setFilter, getFeatureDetail
+    action: str  # nombre de la tool cliente: flyTo, toggleLayer, setFilter, etc.
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 

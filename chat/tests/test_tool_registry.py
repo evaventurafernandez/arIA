@@ -19,7 +19,7 @@ from chat.tools import (
 
 
 def test_initial_registry_contains_phase1_server_tools():
-    for name in ("queryAlerts", "queryFires", "queryBurntArea"):
+    for name in ("queryAlerts", "queryFires", "queryBurntArea", "activeFiresNearPopulation"):
         assert name in TOOLS, f"Tool '{name}' no esta en el registro server"
         tool = TOOLS[name]
         assert isinstance(tool, ServerTool)
@@ -27,7 +27,7 @@ def test_initial_registry_contains_phase1_server_tools():
 
 
 def test_initial_registry_contains_phase2_client_tools():
-    for name in ("flyTo", "toggleLayer", "setFilter", "getFeatureDetail"):
+    for name in ("flyTo", "toggleLayer", "setVisibleLayers", "setFilter", "showGeoJsonResults", "getFeatureDetail"):
         assert name in CLIENT_TOOLS, f"Tool cliente '{name}' no esta en el registro"
         tool = CLIENT_TOOLS[name]
         assert isinstance(tool, ClientTool)
@@ -41,9 +41,12 @@ def test_get_openai_tool_specs_includes_server_and_client():
         "queryAlerts",
         "queryFires",
         "queryBurntArea",
+        "activeFiresNearPopulation",
         "flyTo",
         "toggleLayer",
+        "setVisibleLayers",
         "setFilter",
+        "showGeoJsonResults",
         "getFeatureDetail",
     ):
         assert required in names

@@ -54,6 +54,35 @@ HERMES_TOOL_CALL_RE = re.compile(
 )
 
 
+# Mapeo determinista: cada tool de DATOS (server-side) implica un conjunto de
+# capas del visor relevantes para entender el resultado. Cuando el LLM ejecuta
+# una de estas tools, el orquestador inferira automaticamente un
+# `setVisibleLayers` con la union de capas usadas, salvo que el LLM ya emita
+# una accion explicita sobre capas (toggleLayer / setVisibleLayers). Esto
+# garantiza que el visor refleje solo las capas consultadas y desactive las
+# que vienen activas por defecto pero no se han usado en la consulta actual.
+SERVER_TOOL_TO_LAYERS: dict[str, tuple[str, ...]] = {
+    "queryAlerts": ("alerts",),
+    "queryFires": ("fires",),
+    "queryBurntArea": ("burnt_area",),
+    "queryAemetMaxTempHistory": ("aemet_max_temp_history",),
+    "aemetWarningsNearPopulation": ("aemet_max_temp_history", "nucleos"),
+    "firesNearPopulation": ("firms_history", "nucleos"),
+    "activeFiresNearPopulation": ("fires", "nucleos"),
+    "firmsHotspotAnalysis": ("firms_history",),
+    "landcoverAtPoint": ("corine_wms",),
+    "summarizeSituation": ("alerts", "fires"),
+    "searchPlace": (),
+    "explainTerm": (),
+}
+
+
+# Tools cliente que, si las invoca el LLM, indican que el modelo ya esta
+# gestionando la visibilidad de capas explicitamente. En ese caso el
+# orquestador NO inyecta su auto-`setVisibleLayers` para no pisarlo.
+_LAYER_CLIENT_TOOLS = frozenset({"toggleLayer", "setVisibleLayers"})
+
+
 class OrchestratorConfig:
     """Wrapper minimo para inyectar settings sin acoplar a `main.py` en tests."""
 
@@ -221,6 +250,204 @@ def _summarize_result(result: Any, *, max_len: int = 400) -> str:
     return text
 
 
+def _compact_result_for_model(
+    result: Any,
+    *,
+    auto_client_actions: list[ClientAction] | None = None,
+    max_items: int = 20,
+) -> Any:
+    """Reduce observaciones pesadas antes de reinyectarlas al LLM.
+
+    Algunas tools devuelven GeoJSON para el mapa. Ese payload debe viajar al
+    frontend como `client_action`, no volver entero al LLM en la siguiente
+    llamada: infla el prompt y puede romper endpoints OpenAI-compatible.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    compact = dict(result)
+    geojson = compact.pop("map_geojson", None)
+    if isinstance(geojson, dict):
+        features = geojson.get("features")
+        feature_count = len(features) if isinstance(features, list) else 0
+        compact["map_geojson_summary"] = {
+            "type": geojson.get("type"),
+            "feature_count": feature_count,
+            "omitted_from_llm_observation": True,
+        }
+
+    items = compact.get("items")
+    if isinstance(items, list) and len(items) > max_items:
+        compact["items"] = items[:max_items]
+        compact["items_omitted_from_llm_observation"] = len(items) - max_items
+
+    if auto_client_actions:
+        compact["client_actions_queued"] = [
+            {"id": action.id, "action": action.action}
+            for action in auto_client_actions
+        ]
+
+    return compact
+
+
+def _auto_client_actions_from_result(
+    tool_name: str,
+    result: Any,
+    *,
+    next_index: int,
+) -> list[ClientAction]:
+    """Convierte salidas cartograficas de server tools en acciones de visor.
+
+    El LLM no necesita copiar GeoJSON en un tool_call de cliente. Si una tool de
+    datos ya produjo un FeatureCollection, el backend puede mandarlo al mapa de
+    forma determinista.
+    """
+    if not isinstance(result, dict):
+        return []
+
+    geojson = result.get("map_geojson")
+    if not isinstance(geojson, dict) or geojson.get("type") != "FeatureCollection":
+        return []
+    features = geojson.get("features")
+    if not isinstance(features, list) or not features:
+        return []
+
+    title = tool_name
+    if tool_name == "activeFiresNearPopulation":
+        title = "Focos activos cerca de núcleos"
+
+    action_args = {
+        "title": title,
+        "geojson": geojson,
+        "fit": True,
+        "clear_existing": True,
+    }
+    ok, _err = _validate_args("showGeoJsonResults", action_args)
+    if not ok:
+        return []
+
+    return [
+        ClientAction(
+            id=f"ca-{next_index}",
+            action="showGeoJsonResults",
+            arguments=action_args,
+        )
+    ]
+
+
+_HISTORICAL_DATE_LAYER: dict[str, str] = {
+    "queryBurntArea": "burnt_area",
+    "firesNearPopulation": "firms_history",
+    "firmsHotspotAnalysis": "firms_history",
+    "queryAemetMaxTempHistory": "aemet_max_temp_history",
+    "aemetWarningsNearPopulation": "aemet_max_temp_history",
+}
+
+
+def _auto_layer_date_from_result(tool_name: str, result: Any) -> tuple[str, str] | None:
+    """Si la observacion sugiere un dia concreto de interes, devuelve (layer, date).
+
+    Reglas:
+    - Para tools con timeline (queryBurntArea, firesNearPopulation,
+      firmsHotspotAnalysis), si `filters.date_from == filters.date_to` el
+      usuario pidio un dia concreto: sincronizamos el slider a esa fecha
+      aunque el resultado este vacio (el visor debe seguir reflejando lo
+      consultado).
+    - Para queryBurntArea con rango amplio, si el resultado expone `peak_day`
+      con area quemada > 0, sincronizamos al dia pico para que el mapa
+      muestre exactamente la cifra principal que el texto va a citar.
+    - Cualquier otra tool: no se infieren fechas.
+    """
+    if not isinstance(result, dict):
+        return None
+
+    filters = result.get("filters")
+    layer = _HISTORICAL_DATE_LAYER.get(tool_name)
+    if layer and isinstance(filters, dict):
+        date_from = filters.get("date_from")
+        date_to = filters.get("date_to")
+        if (
+            isinstance(date_from, str)
+            and isinstance(date_to, str)
+            and date_from == date_to
+        ):
+            return (layer, date_from)
+
+    if tool_name == "queryBurntArea":
+        peak = result.get("peak_day")
+        if isinstance(peak, dict):
+            date_value = peak.get("nominal_date")
+            burned_ha = peak.get("burned_area_ha")
+            if isinstance(date_value, str) and burned_ha not in (None, 0, 0.0):
+                return ("burnt_area", date_value)
+
+    if tool_name == "queryAemetMaxTempHistory":
+        peak = result.get("peak_day")
+        if isinstance(peak, dict):
+            date_value = peak.get("nominal_date")
+            max_temp = peak.get("max_temperature_c")
+            if isinstance(date_value, str) and isinstance(max_temp, (int, float)):
+                return ("aemet_max_temp_history", date_value)
+    return None
+
+
+def _build_auto_client_actions(
+    *,
+    server_tools_used: list[str],
+    layer_actions_from_llm: bool,
+    pending_layer_dates: list[tuple[str, str]],
+    next_index: int,
+) -> list[ClientAction]:
+    """Construye las acciones de visor deterministas para cerrar el turno.
+
+    Reglas:
+    - Si el LLM emitio toggleLayer o setVisibleLayers, no anadimos nuestro
+      setVisibleLayers automatico (respetamos su intencion explicita).
+    - Si se usaron tools de datos con capas asociadas, emitimos un unico
+      setVisibleLayers con la union de capas usadas para que el visor refleje
+      solo lo consultado y apague el resto del catalogo.
+    - Para fechas inferidas (ej. dia pico de Burnt Area), encolamos un
+      setLayerDate por fecha.
+    """
+    actions: list[ClientAction] = []
+    idx = next_index
+
+    if not layer_actions_from_llm:
+        layers_union: list[str] = []
+        seen: set[str] = set()
+        for tool_name in server_tools_used:
+            for layer in SERVER_TOOL_TO_LAYERS.get(tool_name, ()):
+                if layer not in seen:
+                    seen.add(layer)
+                    layers_union.append(layer)
+        if layers_union:
+            actions.append(
+                ClientAction(
+                    id=f"ca-{idx}",
+                    action="setVisibleLayers",
+                    arguments={"names": layers_union},
+                )
+            )
+            idx += 1
+
+    seen_dates: set[tuple[str, str]] = set()
+    for layer, date_value in pending_layer_dates:
+        key = (layer, date_value)
+        if key in seen_dates:
+            continue
+        seen_dates.add(key)
+        actions.append(
+            ClientAction(
+                id=f"ca-{idx}",
+                action="setLayerDate",
+                arguments={"layer": layer, "date": date_value},
+            )
+        )
+        idx += 1
+
+    return actions
+
+
 async def _execute_tool(tool_name: str, args: dict[str, Any]) -> tuple[bool, Any, str]:
     """Ejecuta el handler de la tool. Devuelve (ok, result_or_None, error_msg)."""
     tool = TOOLS[tool_name]
@@ -292,6 +519,9 @@ async def run_chat(
     tools_spec = get_openai_tool_specs()
     trace: list[TraceEntry] = []
     client_actions: list[ClientAction] = []
+    server_tools_used: list[str] = []
+    pending_layer_dates: list[tuple[str, str]] = []
+    layer_actions_from_llm = False
     iterations = 0
     truncated = False
     final_text = ""
@@ -372,6 +602,8 @@ async def run_chat(
                 client_actions.append(
                     ClientAction(id=action_id, action=tool_name, arguments=args)
                 )
+                if tool_name in _LAYER_CLIENT_TOOLS:
+                    layer_actions_from_llm = True
                 trace.append(
                     TraceEntry(
                         tool=tool_name,
@@ -390,11 +622,27 @@ async def run_chat(
                 history.append({"role": "tool", "tool_call_id": call["id"], "content": exec_err})
                 continue
 
+            server_tools_used.append(tool_name)
+            layer_date = _auto_layer_date_from_result(tool_name, result)
+            if layer_date is not None:
+                pending_layer_dates.append(layer_date)
+
+            auto_actions = _auto_client_actions_from_result(
+                tool_name,
+                result,
+                next_index=len(client_actions) + 1,
+            )
+            client_actions.extend(auto_actions)
+            compact_result = _compact_result_for_model(
+                result,
+                auto_client_actions=auto_actions,
+            )
+
             trace.append(
                 TraceEntry(
                     tool=tool_name,
                     arguments=args,
-                    result_summary=_summarize_result(result),
+                    result_summary=_summarize_result(compact_result),
                     ok=True,
                 )
             )
@@ -402,11 +650,19 @@ async def run_chat(
                 {
                     "role": "tool",
                     "tool_call_id": call["id"],
-                    "content": json.dumps(result, ensure_ascii=False, default=str),
+                    "content": json.dumps(compact_result, ensure_ascii=False, default=str),
                 }
             )
     else:
         truncated = True
+
+    auto_layer_actions = _build_auto_client_actions(
+        server_tools_used=server_tools_used,
+        layer_actions_from_llm=layer_actions_from_llm,
+        pending_layer_dates=pending_layer_dates,
+        next_index=len(client_actions) + 1,
+    )
+    client_actions.extend(auto_layer_actions)
 
     blocks = parse_blocks(final_text)
     return ChatReply(
@@ -456,6 +712,9 @@ async def run_chat_stream(
 
     tools_spec = get_openai_tool_specs()
     client_actions_count = 0
+    server_tools_used: list[str] = []
+    pending_layer_dates: list[tuple[str, str]] = []
+    layer_actions_from_llm = False
     iterations = 0
     truncated = False
 
@@ -489,6 +748,20 @@ async def run_chat_stream(
                 value = getattr(blocks, key)
                 if value:
                     yield _make_event("final_block", key=key, content=value)
+            auto_layer_actions = _build_auto_client_actions(
+                server_tools_used=server_tools_used,
+                layer_actions_from_llm=layer_actions_from_llm,
+                pending_layer_dates=pending_layer_dates,
+                next_index=client_actions_count + 1,
+            )
+            for action in auto_layer_actions:
+                client_actions_count += 1
+                yield _make_event(
+                    "client_action",
+                    id=action.id,
+                    action=action.action,
+                    arguments=action.arguments,
+                )
             yield _make_event("done", iterations=iterations, truncated=False)
             return
 
@@ -530,6 +803,8 @@ async def run_chat_stream(
             if is_client_tool(tool_name):
                 client_actions_count += 1
                 action_id = f"ca-{client_actions_count}"
+                if tool_name in _LAYER_CLIENT_TOOLS:
+                    layer_actions_from_llm = True
                 yield _make_event("client_action", id=action_id, action=tool_name, arguments=args)
                 yield _make_event(
                     "tool_call_done",
@@ -546,18 +821,56 @@ async def run_chat_stream(
                 history.append({"role": "tool", "tool_call_id": call["id"], "content": exec_err})
                 continue
 
+            server_tools_used.append(tool_name)
+            layer_date = _auto_layer_date_from_result(tool_name, result)
+            if layer_date is not None:
+                pending_layer_dates.append(layer_date)
+
+            auto_actions = _auto_client_actions_from_result(
+                tool_name,
+                result,
+                next_index=client_actions_count + 1,
+            )
+            if auto_actions:
+                client_actions_count += len(auto_actions)
+            compact_result = _compact_result_for_model(
+                result,
+                auto_client_actions=auto_actions,
+            )
+
             yield _make_event(
                 "tool_call_done",
                 id=call["id"], tool=tool_name, ok=True,
-                result_summary=_summarize_result(result),
+                result_summary=_summarize_result(compact_result),
             )
+            for action in auto_actions:
+                yield _make_event(
+                    "client_action",
+                    id=action.id,
+                    action=action.action,
+                    arguments=action.arguments,
+                )
             history.append(
                 {
                     "role": "tool",
                     "tool_call_id": call["id"],
-                    "content": json.dumps(result, ensure_ascii=False, default=str),
+                    "content": json.dumps(compact_result, ensure_ascii=False, default=str),
                 }
             )
 
     truncated = True
+    auto_layer_actions = _build_auto_client_actions(
+        server_tools_used=server_tools_used,
+        layer_actions_from_llm=layer_actions_from_llm,
+        pending_layer_dates=pending_layer_dates,
+        next_index=client_actions_count + 1,
+    )
+    for action in auto_layer_actions:
+        client_actions_count += 1
+        yield _make_event(
+            "client_action",
+            id=action.id,
+            action=action.action,
+            arguments=action.arguments,
+        )
     yield _make_event("done", iterations=iterations, truncated=truncated)

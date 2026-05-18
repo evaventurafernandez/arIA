@@ -12,6 +12,7 @@ import httpx
 import pytest
 import respx
 
+from chat.prompt import build_system_prompt
 from chat.orchestrator import OrchestratorConfig, run_chat
 from chat.schemas import ChatMessage
 
@@ -164,3 +165,18 @@ async def test_burnt_area_intersect_population_not_implemented():
         assert reply.trace[0].tool == "burntAreaIntersectPopulation"
         assert reply.trace[0].ok is False
         assert "no existe" in (reply.trace[0].error or "").lower()
+
+
+def test_prompt_declares_flood_t10_population_crossing_not_implemented():
+    """El prompt debe rechazar el cruce avisos + T10 + nucleos como analisis real.
+
+    La capa T10 existe como WMS visual, pero no como geometria vectorial local
+    contra la que PostGIS pueda calcular intersecciones/distancias.
+    """
+    prompt = build_system_prompt()
+    compact_prompt = " ".join(prompt.split())
+
+    assert "inundabilidad T10" in prompt
+    assert "WMS externo de MITECO" in prompt
+    assert "sin geometria vectorial local en PostGIS" in compact_prompt
+    assert "No generas capas persistentes nuevas desde el chat" in prompt
