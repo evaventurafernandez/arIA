@@ -19,6 +19,7 @@ const CHAT_LAYER_CHECKBOX = {
   burnt_area: 'chk-burnt_area_daily',
   nucleos: 'chk-nucleos_poblacion',
   flood: 'chk-flood',
+  roads: 'chk-roads',
   corine_wms: 'chk-corine_wms',
 };
 

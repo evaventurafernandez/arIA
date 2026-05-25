@@ -23,6 +23,7 @@ LAYER_NAMES = [
     "burnt_area",
     "nucleos",
     "flood",
+    "roads",
     "corine_wms",
 ]
 
@@ -83,6 +84,7 @@ client_tool(
                     "FIRMS; 'aemet_max_temp_history' = historico AEMET de temperaturas "
                     "maximas; 'burnt_area' = areas quemadas Burnt Area v4; 'nucleos' "
                     "= nucleos de poblacion IGN; 'flood' = peligro fluvial T=10; "
+                    "'roads' = red viaria IGR-RT (IGN/CNIG); "
                     "'corine_wms' = uso del suelo CORINE."
                 ),
             },

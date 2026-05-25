@@ -71,6 +71,7 @@ SERVER_TOOL_TO_LAYERS: dict[str, tuple[str, ...]] = {
     "activeFiresNearPopulation": ("fires", "nucleos"),
     "firmsHotspotAnalysis": ("firms_history",),
     "landcoverAtPoint": ("corine_wms",),
+    "queryRoadsNearPoint": ("roads",),
     "summarizeSituation": ("alerts", "fires"),
     "searchPlace": (),
     "explainTerm": (),
