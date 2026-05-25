@@ -27,6 +27,7 @@ async def chat_completion(
     model: str,
     tools: list[dict[str, Any]] | None = None,
     timeout: float = 120.0,
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     """Llama al endpoint OpenAI-compatible y devuelve el JSON crudo.
 
@@ -40,6 +41,8 @@ async def chat_completion(
         "messages": messages,
         "stream": False,
     }
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
     if tools:
         payload["tools"] = tools
         # Algunos backends (vLLM con Gemma) no asumen 'auto' por defecto y se

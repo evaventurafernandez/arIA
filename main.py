@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_max_tool_iterations: int = 8
     llm_request_timeout: float = 120.0
+    llm_temperature: float | None = None  # si se setea, se propaga al payload OpenAI
     # Chat LLM (Fase 6: endurecimiento)
     chat_rate_limit: str = "30/minute"
     chat_max_user_message_length: int = 4000

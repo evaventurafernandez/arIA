@@ -95,6 +95,7 @@ class OrchestratorConfig:
         max_iterations: int,
         timeout: float,
         max_user_message_length: int = 4000,
+        temperature: float | None = None,
     ) -> None:
         self.api_url = api_url
         self.api_key = api_key
@@ -102,6 +103,7 @@ class OrchestratorConfig:
         self.max_iterations = max_iterations
         self.timeout = timeout
         self.max_user_message_length = max_user_message_length
+        self.temperature = temperature
 
 
 def _build_history(
@@ -537,6 +539,7 @@ async def run_chat(
                 model=config.model,
                 tools=tools_spec,
                 timeout=config.timeout,
+                temperature=config.temperature,
             )
         except LLMClientError:
             raise
@@ -729,6 +732,7 @@ async def run_chat_stream(
                 model=config.model,
                 tools=tools_spec,
                 timeout=config.timeout,
+                temperature=config.temperature,
             )
         except LLMClientError as exc:
             yield _make_event("error", message=str(exc))

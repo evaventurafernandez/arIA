@@ -55,6 +55,7 @@ def _build_config(settings) -> OrchestratorConfig:
         max_iterations=int(settings.llm_max_tool_iterations),
         timeout=float(settings.llm_request_timeout),
         max_user_message_length=int(getattr(settings, "chat_max_user_message_length", 4000)),
+        temperature=getattr(settings, "llm_temperature", None),
     )
 
 
