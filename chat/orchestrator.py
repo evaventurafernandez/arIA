@@ -84,6 +84,31 @@ SERVER_TOOL_TO_LAYERS: dict[str, tuple[str, ...]] = {
 _LAYER_CLIENT_TOOLS = frozenset({"toggleLayer", "setVisibleLayers"})
 
 
+# === Deteccion de bucle de tools (Accion #2) ===
+# Cuando el LLM ejecuta muchas tools de DATOS sin cerrar con texto, el
+# orquestador fuerza un cierre. Necesario para modelos "tozudos" como
+# `granite4.1:30b` que ignoran la REGLA DE BLOQUEO PREVENTIVO del system
+# prompt (commit eb68b18) y siguen invocando tools en busca de la sub-consulta
+# que no es ejecutable (p.ej. cruce contra capa T10 no vectorial). El cierre
+# se hace re-invocando al LLM con `tools=None` para que solo pueda emitir
+# texto, mas un mensaje de sistema que prohibe inventar datos.
+MAX_DATA_TOOLS_BEFORE_FORCE = 5
+FORCE_TERMINATION_SYSTEM_MSG = (
+    "AVISO DEL ORQUESTADOR: ya has ejecutado varias tools sin cerrar con "
+    "texto. Responde AHORA con un mensaje final usando los 4 bloques "
+    "canonicos. PROHIBIDO emitir mas tool_calls. PROHIBIDO inventar datos: "
+    "si alguna sub-consulta no se ha podido completar (p.ej. cruce espacial "
+    "contra capa T10 / inundabilidad), DECLARA EXPLICITAMENTE la limitacion "
+    "en el bloque [Resultados] y NO produzcas cifras ni listas que no esten "
+    "respaldadas por los datos que ya has recibido."
+)
+
+
+def _count_data_tool_calls(trace: list[TraceEntry]) -> int:
+    """Cuenta tools de DATOS (server-side) ejecutadas con exito."""
+    return sum(1 for t in trace if t.ok and not is_client_tool(t.tool))
+
+
 class OrchestratorConfig:
     """Wrapper minimo para inyectar settings sin acoplar a `main.py` en tests."""
 
@@ -657,6 +682,30 @@ async def run_chat(
                     "content": json.dumps(compact_result, ensure_ascii=False, default=str),
                 }
             )
+
+        # Accion #2: si el LLM lleva demasiadas tools de datos sin cerrar,
+        # forzar texto final llamando una vez mas sin tools.
+        if _count_data_tool_calls(trace) >= MAX_DATA_TOOLS_BEFORE_FORCE:
+            history.append({"role": "system", "content": FORCE_TERMINATION_SYSTEM_MSG})
+            try:
+                forced_payload = await chat_completion(
+                    messages=history,
+                    api_url=config.api_url,
+                    api_key=config.api_key,
+                    model=config.model,
+                    tools=None,
+                    timeout=config.timeout,
+                    temperature=config.temperature,
+                )
+            except LLMClientError:
+                truncated = True
+                break
+            forced_choices = forced_payload.get("choices") or []
+            if forced_choices:
+                forced_msg = forced_choices[0].get("message") or {}
+                final_text = (forced_msg.get("content") or "").strip()
+            truncated = True
+            break
     else:
         truncated = True
 
@@ -863,7 +912,40 @@ async def run_chat_stream(
                 }
             )
 
-    truncated = True
+        # Accion #2: si el LLM lleva demasiadas tools de datos sin cerrar,
+        # forzar texto final llamando una vez mas sin tools. Emitimos los
+        # bloques finales como `final_block` igual que el camino normal.
+        if len(server_tools_used) >= MAX_DATA_TOOLS_BEFORE_FORCE:
+            history.append({"role": "system", "content": FORCE_TERMINATION_SYSTEM_MSG})
+            try:
+                forced_payload = await chat_completion(
+                    messages=history,
+                    api_url=config.api_url,
+                    api_key=config.api_key,
+                    model=config.model,
+                    tools=None,
+                    timeout=config.timeout,
+                    temperature=config.temperature,
+                )
+            except LLMClientError as exc:
+                yield _make_event("error", message=str(exc))
+                return
+            forced_choices = forced_payload.get("choices") or []
+            forced_text = ""
+            if forced_choices:
+                forced_msg = forced_choices[0].get("message") or {}
+                forced_text = (forced_msg.get("content") or "").strip()
+            blocks = parse_blocks(forced_text)
+            for key in ("interpretacion", "operaciones", "resultados", "interpretacion_emergencia"):
+                value = getattr(blocks, key)
+                if value:
+                    yield _make_event("final_block", key=key, content=value)
+            truncated = True
+            break
+    else:
+        # While completo sin break: max_iterations alcanzadas.
+        truncated = True
+
     auto_layer_actions = _build_auto_client_actions(
         server_tools_used=server_tools_used,
         layer_actions_from_llm=layer_actions_from_llm,
