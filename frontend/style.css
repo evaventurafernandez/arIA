@@ -729,3 +729,22 @@ header h1 { font-size: 16px; font-weight: 600; color: #fff; }
     animation-duration: 1.8s;
   }
 }
+
+.roads-source-label {
+  margin-left: 6px;
+  font-size: 10px;
+  color: #aaa;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.roads-source-label.is-ok { color: #4caf50; }            /* WFS ok y usándose como primaria */
+.roads-source-label.is-secondary { color: #29b6f6; }     /* WFS ok pero render por MVT (zoom bajo) */
+.roads-source-label.is-fallback { color: #ffb300; }      /* WFS no responde, render por MVT */
+.roads-source-label.is-down { color: #e57373; }          /* WFS caído y sin teselas */
+.roads-source-label.is-probing { color: #b0bec5; font-style: italic; }
+
+.roads-popup table { border-collapse: collapse; font-size: 12px; }
+.roads-popup th { text-align: left; padding-right: 8px; color: #555; font-weight: 500; }
+.roads-popup td { padding-bottom: 2px; }
+.roads-popup .roads-popup-source { margin-top: 6px; font-size: 11px; color: #777; }

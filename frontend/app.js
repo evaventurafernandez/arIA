@@ -3887,5 +3887,345 @@ const chkAlerts = document.getElementById('chk-alerts');
 const chkFires  = document.getElementById('chk-fires');
 if (chkAlerts) chkAlerts.addEventListener('change', e => toggleLayer('alerts', e.target.checked));
 if (chkFires)  chkFires.addEventListener('change',  e => toggleLayer('fires',  e.target.checked));
- 
+
+// === ROADS LAYER (IDEE WFS primario + IGR-RT fallback) ===
+const ROADS_FEATURES_URL = '/api/roads/features';
+const ROADS_HEALTH_URL = '/api/roads/health';
+const ROADS_TILE_URL = '/api/roads/tiles/{z}/{x}/{y}.mvt';
+const ROADS_MVT_LAYER_NAME = 'carreteras';
+const ROADS_PRIMARY_MIN_ZOOM = 10;  // por debajo de z=10 usamos siempre MVT (rápido, escalonado por clase)
+const ROADS_TILE_MIN_ZOOM = 7;      // autopistas visibles desde z=7
+const ROADS_FEATURE_LIMIT = 1500;
+const ROADS_MOVE_DEBOUNCE_MS = 350;
+const ROADS_HEALTH_REPROBE_MS = 60000;  // re-probe periódico al WFS si se está usando fallback
+const ROADS_STYLE_BY_CLASE = {
+  'Autopista de peaje':        { color: '#B71C1C', weight: 3.0 },
+  'Autopista libre / autovía': { color: '#D32F2F', weight: 3.0 },
+  'Carretera multicarril':     { color: '#E65100', weight: 2.5 },
+  'Carretera convencional':    { color: '#FBC02D', weight: 2.0 },
+  'Urbano':                    { color: '#90A4AE', weight: 1.6 },
+  'Urbano diseminado':         { color: '#B0BEC5', weight: 1.3 },
+  'Camino':                    { color: '#8D6E63', weight: 1.0, dashArray: '3,3' },
+  'Senda':                     { color: '#A1887F', weight: 0.8, dashArray: '2,3' },
+  'Carril bici':               { color: '#388E3C', weight: 1.5, dashArray: '5,4' },
+};
+const ROADS_DEFAULT_STYLE = { color: '#9E9E9E', weight: 1.2 };
+
+let roadsVisible = false;
+let roadsPrimaryLayer = null;
+let roadsFallbackLayer = null;
+let roadsRefreshHandle = null;
+let roadsRequestToken = 0;
+let roadsHealthCache = null;
+let roadsHealthCacheUntil = 0;
+let roadsHealthReprobeHandle = null;
+let roadsSourceLabel = null;
+const ROADS_PANE = 'roadsLayerPane';
+
+function ensureRoadsPane() {
+  if (!map.getPane(ROADS_PANE)) {
+    map.createPane(ROADS_PANE);
+    // Carreteras como capa de contexto: visualmente entre los overlays WMS (250-285)
+    // y las capas tematicas (AEMET=330, NUCLEOS=345, overlayPane=400 con focos FIRMS
+    // y avisos CAP). Asi los elementos tematicos reciben los clicks por encima.
+    map.getPane(ROADS_PANE).style.zIndex = 290;
+  }
+}
+
+function getRoadStyle(props) {
+  const base = ROADS_STYLE_BY_CLASE[props && props.clase] || ROADS_DEFAULT_STYLE;
+  return Object.assign({}, base, { opacity: 0.9, fill: false });
+}
+
+function escapeRoadValue(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  return escapeHtml(String(value));
+}
+
+function buildRoadsPopupContent(props) {
+  const rows = [
+    ['Identificador', props.inspire_id || props.id_tramo],
+    ['Clase', props.clase],
+    ['Tipo', props.tipo],
+    ['Nombre', props.nombre],
+    ['Código', props.codigo],
+    ['Titular', props.titular],
+    ['Sentido', props.sentido],
+    ['Acceso', props.acceso],
+    ['Estado físico', props.estado_fisico],
+    ['Firme', props.firme],
+    ['Nº carriles', props.n_carriles],
+    ['Orden', props.orden],
+    ['Vehículos', props.tipovehic],
+    ['Territorio', props.territory_code],
+  ];
+  const body = rows
+    .map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeRoadValue(value)}</td></tr>`)
+    .join('');
+  const fuente = escapeHtml(props.fuente || '—');
+  return `<div class="roads-popup"><table>${body}</table><div class="roads-popup-source">Fuente: ${fuente}</div></div>`;
+}
+
+// Estados del badge:
+//   wfsStatus: 'ok' | 'down' | 'probing' | null
+//   mode: 'primary' (WFS+local enriquecido) | 'mvt-by-zoom' (WFS ok pero estamos en zoom bajo)
+//         | 'mvt-by-fallback' (WFS no responde, render desde local) | null
+function setRoadsLabel({ wfsStatus = null, wfsLatency = null, wfsCheckedAt = null, mode = null } = {}) {
+  if (!roadsSourceLabel) roadsSourceLabel = document.getElementById('roads-source-label');
+  if (!roadsSourceLabel) return;
+  roadsSourceLabel.classList.remove('is-ok', 'is-secondary', 'is-fallback', 'is-down', 'is-probing');
+  if (!wfsStatus && !mode) {
+    roadsSourceLabel.textContent = '';
+    roadsSourceLabel.removeAttribute('title');
+    return;
+  }
+  let badgeText, cls;
+  if (wfsStatus === 'probing') {
+    badgeText = 'probando…';
+    cls = 'is-probing';
+  } else if (mode === 'primary') {
+    badgeText = 'WFS+local';
+    cls = 'is-ok';
+  } else if (mode === 'mvt-by-zoom') {
+    badgeText = 'MVT local · zoom bajo';
+    cls = 'is-secondary';
+  } else if (mode === 'mvt-by-fallback') {
+    badgeText = 'MVT local · WFS no responde';
+    cls = 'is-fallback';
+  } else if (wfsStatus === 'down') {
+    badgeText = 'WFS no responde';
+    cls = 'is-down';
+  } else {
+    badgeText = wfsStatus || '';
+    cls = 'is-secondary';
+  }
+  roadsSourceLabel.classList.add(cls);
+  roadsSourceLabel.textContent = badgeText;
+  const wfsLine = 'WFS de transportes de IDEE: '
+    + (wfsStatus === 'ok' ? 'responde' : wfsStatus === 'down' ? 'no responde' : wfsStatus || '—')
+    + (wfsStatus === 'ok' && wfsLatency != null ? ` (${wfsLatency} ms)` : '');
+  const tooltip = [
+    wfsLine,
+    wfsCheckedAt ? 'última prueba: ' + new Date(wfsCheckedAt).toLocaleTimeString() : null,
+    mode === 'primary' ? 'Geometría del WFS, atributos de IGR-RT local (enriquecimiento por id_tramo).' : null,
+    mode === 'mvt-by-zoom' ? 'Aunque el WFS responde, a este zoom el bbox es demasiado grande para el WFS; el visor sirve la teselación MVT derivada de IGR-RT local. Al acercar el zoom (z≥12), se vuelve a la ruta WFS+local.' : null,
+    mode === 'mvt-by-fallback' ? 'El WFS no respondió o devolvió error; el visor está usando exclusivamente la copia local IGR-RT por resiliencia. Reintenta automáticamente cada minuto.' : null,
+  ].filter(Boolean).join('\n');
+  roadsSourceLabel.setAttribute('title', tooltip);
+}
+
+async function probeRoadsHealth(force = false) {
+  const now = Date.now();
+  if (!force && roadsHealthCache && now < roadsHealthCacheUntil) return roadsHealthCache;
+  try {
+    const r = await fetch(ROADS_HEALTH_URL, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    roadsHealthCache = await r.json();
+  } catch (err) {
+    roadsHealthCache = { status: 'down', error: String(err) };
+  }
+  roadsHealthCacheUntil = now + 20000;
+  return roadsHealthCache;
+}
+
+function clearRoadsLayers() {
+  if (roadsPrimaryLayer) {
+    map.removeLayer(roadsPrimaryLayer);
+    roadsPrimaryLayer = null;
+  }
+  if (roadsFallbackLayer) {
+    map.removeLayer(roadsFallbackLayer);
+    roadsFallbackLayer = null;
+  }
+}
+
+function buildRoadsFallbackLayer() {
+  ensureRoadsPane();
+  const layerStyles = {
+    [ROADS_MVT_LAYER_NAME]: properties => getRoadStyle(properties),
+  };
+  const layer = L.vectorGrid.protobuf(ROADS_TILE_URL, {
+    rendererFactory: L.canvas.tile,
+    pane: ROADS_PANE,
+    interactive: true,
+    minZoom: ROADS_TILE_MIN_ZOOM,
+    maxNativeZoom: 18,
+    vectorTileLayerStyles: layerStyles,
+    getFeatureId: feature => feature.properties.core_feature_id,
+  });
+  layer.on('click', e => {
+    const props = Object.assign({}, e.layer.properties || {});
+    if (!props.fuente) props.fuente = 'IGR-RT local (fallback)';
+    L.popup({ pane: ROADS_PANE })
+      .setLatLng(e.latlng)
+      .setContent(buildRoadsPopupContent(props))
+      .openOn(map);
+  });
+  return layer;
+}
+
+async function loadRoadsPrimary() {
+  if (!roadsVisible) return;
+  if (map.getZoom() < ROADS_PRIMARY_MIN_ZOOM) {
+    // Zoom bajo: la ruta primaria no es eficiente; usamos siempre la teselación MVT
+    // (con filtro de clase escalonado server-side). Esto NO es un fallo del WFS,
+    // es una decisión de diseño por el tamaño del bbox.
+    activateRoadsFallback('mvt-by-zoom');
+    return;
+  }
+  const bounds = map.getBounds();
+  const bbox = [
+    bounds.getWest().toFixed(5),
+    bounds.getSouth().toFixed(5),
+    bounds.getEast().toFixed(5),
+    bounds.getNorth().toFixed(5),
+  ].join(',');
+  const zoom = map.getZoom();
+  const token = ++roadsRequestToken;
+  let payload;
+  try {
+    const url = `${ROADS_FEATURES_URL}?bbox=${encodeURIComponent(bbox)}&limit=${ROADS_FEATURE_LIMIT}&zoom=${zoom}`;
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    payload = await r.json();
+  } catch (err) {
+    if (token !== roadsRequestToken) return;
+    console.warn('Roads primary failed, switching to fallback:', err);
+    roadsHealthCache = { status: 'down', error: String(err), checked_at: new Date().toISOString() };
+    roadsHealthCacheUntil = Date.now() + 20000;
+    activateRoadsFallback('mvt-by-fallback');
+    return;
+  }
+  if (token !== roadsRequestToken || !roadsVisible) return;
+  const source = (payload.metadata && payload.metadata.source) || '';
+  const latency = payload.metadata && payload.metadata.wfs_latency_ms;
+  if (source.startsWith('IGR-RT local')) {
+    // El backend ya cayó al modo local internamente: el WFS no respondió.
+    roadsHealthCache = { status: 'down', checked_at: new Date().toISOString() };
+    roadsHealthCacheUntil = Date.now() + 20000;
+    activateRoadsFallback('mvt-by-fallback');
+    return;
+  }
+  ensureRoadsPane();
+  const newLayer = L.geoJSON(payload, {
+    pane: ROADS_PANE,
+    style: feature => getRoadStyle(feature.properties),
+    onEachFeature: (feature, lyr) => {
+      lyr.bindPopup(buildRoadsPopupContent(feature.properties), { pane: ROADS_PANE });
+    },
+  });
+  if (roadsPrimaryLayer) map.removeLayer(roadsPrimaryLayer);
+  if (roadsFallbackLayer) { map.removeLayer(roadsFallbackLayer); roadsFallbackLayer = null; }
+  roadsPrimaryLayer = newLayer.addTo(map);
+  if (typeof latency === 'number') {
+    roadsHealthCache = { status: 'ok', latency_ms: latency, checked_at: new Date().toISOString() };
+    roadsHealthCacheUntil = Date.now() + 20000;
+  }
+  setRoadsLabel({
+    wfsStatus: 'ok',
+    wfsLatency: typeof latency === 'number' ? latency : (roadsHealthCache && roadsHealthCache.latency_ms),
+    wfsCheckedAt: roadsHealthCache && roadsHealthCache.checked_at,
+    mode: 'primary',
+  });
+}
+
+function activateRoadsFallback(reason = 'mvt-by-fallback') {
+  if (!roadsVisible) return;
+  if (roadsPrimaryLayer) { map.removeLayer(roadsPrimaryLayer); roadsPrimaryLayer = null; }
+  if (!roadsFallbackLayer) {
+    roadsFallbackLayer = buildRoadsFallbackLayer();
+    roadsFallbackLayer.addTo(map);
+  }
+  const h = roadsHealthCache || {};
+  setRoadsLabel({
+    wfsStatus: h.status || null,
+    wfsLatency: h.latency_ms,
+    wfsCheckedAt: h.checked_at,
+    mode: reason,
+  });
+}
+
+function scheduleRoadsRefresh() {
+  if (!roadsVisible) return;
+  if (roadsRefreshHandle) clearTimeout(roadsRefreshHandle);
+  roadsRefreshHandle = setTimeout(() => {
+    roadsRefreshHandle = null;
+    if (roadsFallbackLayer) return;
+    void loadRoadsPrimary();
+  }, ROADS_MOVE_DEBOUNCE_MS);
+}
+
+async function refreshRoadsHealthAndRecover() {
+  if (!roadsVisible) return;
+  const prev = roadsHealthCache && roadsHealthCache.status;
+  const h = await probeRoadsHealth(true);
+  if (!roadsVisible) return;
+  const currentMode = roadsPrimaryLayer
+    ? 'primary'
+    : (map.getZoom() < ROADS_PRIMARY_MIN_ZOOM
+        ? (h.status === 'ok' ? 'mvt-by-zoom' : 'mvt-by-fallback')
+        : (h.status === 'ok' ? 'mvt-by-fallback' : 'mvt-by-fallback'));
+  setRoadsLabel({
+    wfsStatus: h.status,
+    wfsLatency: h.latency_ms,
+    wfsCheckedAt: h.checked_at,
+    mode: currentMode,
+  });
+  // Si el WFS ha vuelto y estamos en fallback a zoom alto, recuperamos la ruta primaria.
+  if (prev !== 'ok' && h.status === 'ok'
+      && !roadsPrimaryLayer
+      && map.getZoom() >= ROADS_PRIMARY_MIN_ZOOM) {
+    void loadRoadsPrimary();
+  }
+}
+
+async function toggleRoads(enabled) {
+  roadsVisible = enabled;
+  if (!enabled) {
+    if (roadsRefreshHandle) { clearTimeout(roadsRefreshHandle); roadsRefreshHandle = null; }
+    if (roadsHealthReprobeHandle) { clearInterval(roadsHealthReprobeHandle); roadsHealthReprobeHandle = null; }
+    clearRoadsLayers();
+    setRoadsLabel({});
+    return;
+  }
+  // Probamos SIEMPRE primero el WFS para que el usuario vea que la fuente primaria
+  // se ha contactado, independientemente del modo de render que se acabe usando.
+  setRoadsLabel({ wfsStatus: 'probing' });
+  const health = await probeRoadsHealth(true);
+  if (!roadsVisible) return;
+  if (roadsHealthReprobeHandle) clearInterval(roadsHealthReprobeHandle);
+  roadsHealthReprobeHandle = setInterval(() => { void refreshRoadsHealthAndRecover(); }, ROADS_HEALTH_REPROBE_MS);
+  if (map.getZoom() < ROADS_PRIMARY_MIN_ZOOM) {
+    activateRoadsFallback(health.status === 'ok' ? 'mvt-by-zoom' : 'mvt-by-fallback');
+    return;
+  }
+  if (health.status === 'ok') {
+    await loadRoadsPrimary();
+  } else {
+    activateRoadsFallback('mvt-by-fallback');
+  }
+}
+
+map.on('moveend', () => {
+  if (!roadsVisible) return;
+  // Si cruzamos el umbral hacia zoom alto y estamos en fallback MVT, intentamos pasar a primaria.
+  if (map.getZoom() >= ROADS_PRIMARY_MIN_ZOOM && roadsFallbackLayer && !roadsPrimaryLayer) {
+    scheduleRoadsRefresh();
+    return;
+  }
+  // Si cruzamos hacia zoom bajo y estamos en primaria, conmutamos a MVT (fallback).
+  if (map.getZoom() < ROADS_PRIMARY_MIN_ZOOM && roadsPrimaryLayer) {
+    activateRoadsFallback();
+    return;
+  }
+  // En primaria, recargamos por bbox con debounce.
+  if (roadsFallbackLayer) return;
+  scheduleRoadsRefresh();
+});
+
+const chkRoads = document.getElementById('chk-roads');
+if (chkRoads) {
+  chkRoads.addEventListener('change', e => { void toggleRoads(e.target.checked); });
+}
+
 init();

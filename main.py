@@ -20,6 +20,7 @@ import httpx
 from PIL import Image
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -3109,6 +3110,7 @@ async def lifespan(app: FastAPI):
 # App
 app = FastAPI(title="MeteoVisor Demo", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Chat LLM (Fase 0+6)
 from chat.router import attach_chat_to  # noqa: E402
@@ -3495,7 +3497,456 @@ def get_nucleos_vector_tile(z: int, x: int, y: int):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT de nucleos: {exc}") from exc
     return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
- 
+
+
+# === ROADS LAYER (IDEE WFS primario + IGR-RT local fallback) ===
+
+ROADS_WFS_URL = "https://servicios.idee.es/wfs-inspire/transportes"
+ROADS_WFS_TYPENAME = "tn-ro:RoadLink"
+ROADS_LAYER_ID = "carreteras_igr_rt"
+ROADS_LAYER_NAME = "Carreteras (IDEE WFS + IGR-RT local)"
+ROADS_MVT_LAYER_NAME = "carreteras"
+ROADS_TILE_MIN_ZOOM = 7
+ROADS_FEATURE_DEFAULT_LIMIT = 1500
+ROADS_FEATURE_MAX_LIMIT = 6000
+
+# Escalonado por zoom: a cada nivel se publica solo el subconjunto de clases relevantes.
+# La regla es "umbral desde el que aparece cada clase". Por debajo del umbral, la clase
+# se filtra en el SQL para reducir bytes/tiempo y para que el dibujo sea progresivo.
+ROADS_CLASE_FIRST_VISIBLE_ZOOM: dict[str, int] = {
+    "Autopista de peaje": 7,
+    "Autopista libre / autovía": 7,
+    "Carretera multicarril": 9,
+    "Carretera convencional": 10,
+    "Urbano": 14,
+    "Urbano diseminado": 14,
+    "Camino": 15,
+    "Carril bici": 15,
+    "Senda": 16,
+}
+
+# Tolerancia de simplificación geométrica por zoom, en metros (CRS EPSG:3857).
+# Sin simplificación, una tesela z=7 pesa ~1,7 MB. Con tolerancia escalonada,
+# el cliente recibe geometrías visualmente correctas pero mucho más ligeras.
+ROADS_TILE_SIMPLIFY_TOLERANCE_METERS: dict[int, float] = {
+    7: 500.0,
+    8: 250.0,
+    9: 120.0,
+    10: 60.0,
+    11: 30.0,
+    12: 15.0,
+    13: 8.0,
+    14: 4.0,
+}
+
+
+def get_roads_tile_simplify_tolerance(z: int) -> float:
+    return ROADS_TILE_SIMPLIFY_TOLERANCE_METERS.get(z, 0.0)
+
+
+def get_roads_visible_clases(zoom: int) -> list[str] | None:
+    visible = [clase for clase, min_z in ROADS_CLASE_FIRST_VISIBLE_ZOOM.items() if zoom >= min_z]
+    if len(visible) == len(ROADS_CLASE_FIRST_VISIBLE_ZOOM):
+        return None  # todas las clases visibles, omitimos filtro
+    return visible
+ROADS_HEALTH_TTL_SECONDS = 30.0
+ROADS_HEALTH_TIMEOUT_SECONDS = 6.0
+ROADS_WFS_TIMEOUT_SECONDS = 20.0
+ROADS_FEATURE_CACHE_TTL_SECONDS = 30.0
+ROADS_FEATURE_CACHE_MAX_ENTRIES = 64
+ROADS_WFS_NS = {
+    "wfs": "http://www.opengis.net/wfs/2.0",
+    "tn-ro": "http://inspire.ec.europa.eu/schemas/tn-ro/4.0",
+    "net": "http://inspire.ec.europa.eu/schemas/net/4.0",
+    "base": "http://inspire.ec.europa.eu/schemas/base/3.3",
+    "gml": "http://www.opengis.net/gml/3.2",
+}
+ROADS_GML_ID_ATTR = "{http://www.opengis.net/gml/3.2}id"
+
+roads_health_cache: dict[str, object] = {"value": None, "expires_at": 0.0}
+roads_feature_cache: dict[tuple, dict] = {}
+
+
+def parse_roads_bbox(bbox: str) -> tuple[float, float, float, float]:
+    try:
+        parts = [float(v) for v in bbox.split(",")]
+    except ValueError as exc:
+        raise ValueError("bbox debe contener cuatro numeros") from exc
+    if len(parts) != 4:
+        raise ValueError("bbox debe tener formato minLon,minLat,maxLon,maxLat")
+    min_lon, min_lat, max_lon, max_lat = parts
+    if min_lon >= max_lon or min_lat >= max_lat:
+        raise ValueError("bbox invalido: min debe ser menor que max")
+    return min_lon, min_lat, max_lon, max_lat
+
+
+def round_roads_bbox_for_cache(bbox: tuple[float, float, float, float]) -> tuple[float, ...]:
+    return tuple(round(v, 3) for v in bbox)
+
+
+def probe_roads_wfs() -> dict:
+    started = time.monotonic()
+    params = {
+        "SERVICE": "WFS",
+        "VERSION": "2.0.0",
+        "REQUEST": "GetCapabilities",
+    }
+    try:
+        with httpx.Client(timeout=ROADS_HEALTH_TIMEOUT_SECONDS, follow_redirects=True, trust_env=False) as client:
+            response = client.get(ROADS_WFS_URL, params=params)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if response.status_code == 200 and b"WFS_Capabilities" in response.content and ROADS_WFS_TYPENAME.encode("utf-8") in response.content:
+            return {"status": "ok", "latency_ms": latency_ms}
+        if response.status_code == 200:
+            return {"status": "degraded", "latency_ms": latency_ms}
+        return {"status": "down", "latency_ms": latency_ms, "http_status": response.status_code}
+    except (httpx.TransportError, httpx.HTTPError) as exc:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {"status": "down", "latency_ms": latency_ms, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def get_roads_health() -> dict:
+    now = time.monotonic()
+    cached = roads_health_cache.get("value")
+    expires_at = float(roads_health_cache.get("expires_at") or 0.0)
+    if cached is not None and now < expires_at:
+        return cached  # type: ignore[return-value]
+    probed = probe_roads_wfs()
+    probed["checked_at"] = datetime.now(timezone.utc).isoformat()
+    roads_health_cache["value"] = probed
+    roads_health_cache["expires_at"] = now + ROADS_HEALTH_TTL_SECONDS
+    return probed
+
+
+def fetch_roads_wfs_geometries(
+    bbox: tuple[float, float, float, float], limit: int
+) -> tuple[list[dict], dict]:
+    min_lon, min_lat, max_lon, max_lat = bbox
+    params = {
+        "SERVICE": "WFS",
+        "VERSION": "2.0.0",
+        "REQUEST": "GetFeature",
+        "TYPENAMES": ROADS_WFS_TYPENAME,
+        "SRSNAME": "EPSG:4326",
+        "COUNT": str(limit),
+        "BBOX": f"{min_lon},{min_lat},{max_lon},{max_lat},EPSG:4326",
+    }
+    started = time.monotonic()
+    with httpx.Client(timeout=ROADS_WFS_TIMEOUT_SECONDS, follow_redirects=True, trust_env=False) as client:
+        response = client.get(ROADS_WFS_URL, params=params)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    features: list[dict] = []
+    number_matched = root.get("numberMatched")
+    number_returned = root.get("numberReturned")
+    for member in root.findall("wfs:member", ROADS_WFS_NS):
+        link = member.find("tn-ro:RoadLink", ROADS_WFS_NS)
+        if link is None:
+            continue
+        local_id_elem = link.find("net:inspireId/base:Identifier/base:localId", ROADS_WFS_NS)
+        local_id = (local_id_elem.text or "").strip() if local_id_elem is not None else ""
+        if not local_id.startswith("VIAL_TR"):
+            continue
+        try:
+            id_tramo = int(local_id[len("VIAL_TR"):])
+        except ValueError:
+            continue
+        pos_elem = link.find("net:centrelineGeometry/gml:LineString/gml:posList", ROADS_WFS_NS)
+        if pos_elem is None or not (pos_elem.text or "").strip():
+            continue
+        raw_coords = pos_elem.text.split()
+        if len(raw_coords) < 4 or len(raw_coords) % 2 != 0:
+            continue
+        try:
+            coords = [
+                [float(raw_coords[i]), float(raw_coords[i + 1])]
+                for i in range(0, len(raw_coords), 2)
+            ]
+        except ValueError:
+            continue
+        features.append({
+            "id_tramo": id_tramo,
+            "inspire_id": local_id,
+            "gml_id": link.get(ROADS_GML_ID_ATTR),
+            "coordinates": coords,
+        })
+    meta = {
+        "latency_ms": latency_ms,
+        "number_matched": int(number_matched) if number_matched and number_matched.isdigit() else None,
+        "number_returned": int(number_returned) if number_returned and number_returned.isdigit() else None,
+    }
+    return features, meta
+
+
+ROADS_LOCAL_ATTRIBUTE_COLUMNS = (
+    "clase", "clase_code", "tipo", "tipo_code", "nombre", "nombre_alt",
+    "codigo", "titular", "titular_code", "sentido", "acceso",
+    "estado_fisico", "estado_fisico_code", "firme", "n_carriles",
+    "orden", "tipovehic", "territory_code",
+)
+
+
+def fetch_roads_local_attributes(id_tramos: list[int]) -> dict[int, dict]:
+    if not id_tramos:
+        return {}
+    sql = """
+    SELECT id_tramo, clase, clase_code, tipo, tipo_code, nombre, nombre_alt, codigo,
+           titular, titular_code, sentido, acceso, estado_fisico, estado_fisico_code,
+           firme, n_carriles, orden, tipovehic, territory_code
+    FROM core.road_segment
+    WHERE id_tramo = ANY(%s)
+    """
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (id_tramos,))
+            cols = [d.name for d in cur.description]
+            return {row[0]: dict(zip(cols, row)) for row in cur.fetchall()}
+
+
+def fetch_roads_local_by_bbox(
+    bbox: tuple[float, float, float, float],
+    limit: int,
+    visible_clases: list[str] | None = None,
+) -> list[dict]:
+    min_lon, min_lat, max_lon, max_lat = bbox
+    clase_filter_sql = " AND clase = ANY(%s::text[])" if visible_clases is not None else ""
+    sql = f"""
+    SELECT id_tramo, inspire_id, clase, clase_code, tipo, tipo_code, nombre, nombre_alt,
+           codigo, titular, titular_code, sentido, acceso, estado_fisico, estado_fisico_code,
+           firme, n_carriles, orden, tipovehic, territory_code,
+           ST_AsGeoJSON(geom)::json AS geom_json
+    FROM core.road_segment
+    WHERE geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
+      AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326)){clase_filter_sql}
+    ORDER BY clase_code NULLS LAST, core_feature_id
+    LIMIT %s
+    """
+    params: list[object] = [
+        min_lon, min_lat, max_lon, max_lat,
+        min_lon, min_lat, max_lon, max_lat,
+    ]
+    if visible_clases is not None:
+        params.append(visible_clases)
+    params.append(limit)
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            cols = [d.name for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def build_roads_feature_from_wfs(wfs_feat: dict, local_attrs: dict | None) -> dict:
+    props: dict[str, object] = {
+        "id_tramo": wfs_feat["id_tramo"],
+        "inspire_id": wfs_feat["inspire_id"],
+    }
+    if local_attrs is not None:
+        for key in ROADS_LOCAL_ATTRIBUTE_COLUMNS:
+            props[key] = local_attrs.get(key)
+        props["fuente"] = "IDEE WFS + IGR-RT local"
+    else:
+        for key in ROADS_LOCAL_ATTRIBUTE_COLUMNS:
+            props[key] = None
+        props["fuente"] = "IDEE WFS (sin enriquecer)"
+    return {
+        "type": "Feature",
+        "id": wfs_feat["inspire_id"],
+        "geometry": {"type": "LineString", "coordinates": wfs_feat["coordinates"]},
+        "properties": props,
+    }
+
+
+def build_roads_feature_from_local(row: dict) -> dict:
+    geom = row.pop("geom_json", None)
+    props = dict(row)
+    props["fuente"] = "IGR-RT local (fallback)"
+    return {
+        "type": "Feature",
+        "id": row["inspire_id"],
+        "geometry": geom,
+        "properties": props,
+    }
+
+
+def fetch_roads_feature_collection(
+    bbox: tuple[float, float, float, float],
+    limit: int,
+    zoom: int | None = None,
+) -> dict:
+    visible_clases = get_roads_visible_clases(zoom) if zoom is not None else None
+    visible_set = set(visible_clases) if visible_clases is not None else None
+    cache_key = (
+        round_roads_bbox_for_cache(bbox),
+        limit,
+        tuple(visible_clases) if visible_clases is not None else None,
+    )
+    now = time.monotonic()
+    cached = roads_feature_cache.get(cache_key)
+    if cached is not None and now < cached["expires_at"]:
+        return cached["payload"]
+
+    metadata: dict[str, object] = {
+        "bbox": list(bbox),
+        "limit": limit,
+        "zoom": zoom,
+        "visible_clases": visible_clases,
+    }
+    try:
+        wfs_features, wfs_meta = fetch_roads_wfs_geometries(bbox, limit)
+        id_tramos = [f["id_tramo"] for f in wfs_features]
+        attrs = fetch_roads_local_attributes(id_tramos)
+        features: list[dict] = []
+        dropped_by_clase = 0
+        for f in wfs_features:
+            local_attrs = attrs.get(f["id_tramo"])
+            if visible_set is not None:
+                clase = (local_attrs or {}).get("clase")
+                if clase is None or clase not in visible_set:
+                    dropped_by_clase += 1
+                    continue
+            features.append(build_roads_feature_from_wfs(f, local_attrs))
+        metadata.update({
+            "source": "IDEE WFS + IGR-RT local",
+            "wfs_latency_ms": wfs_meta["latency_ms"],
+            "wfs_number_matched": wfs_meta["number_matched"],
+            "wfs_number_returned": wfs_meta["number_returned"],
+            "enriched_count": sum(1 for f in features if f["properties"].get("clase") is not None),
+            "filtered_out_by_zoom": dropped_by_clase,
+        })
+    except Exception as exc:
+        local_rows = fetch_roads_local_by_bbox(bbox, limit, visible_clases)
+        features = [build_roads_feature_from_local(row) for row in local_rows]
+        metadata.update({
+            "source": "IGR-RT local (fallback)",
+            "fallback_reason": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "local_feature_count": len(features),
+        })
+        roads_health_cache["value"] = {
+            "status": "down",
+            "latency_ms": None,
+            "error": metadata["fallback_reason"],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        roads_health_cache["expires_at"] = now + ROADS_HEALTH_TTL_SECONDS
+
+    payload = {
+        "type": "FeatureCollection",
+        "features": features,
+        "metadata": metadata,
+    }
+    if len(roads_feature_cache) >= ROADS_FEATURE_CACHE_MAX_ENTRIES:
+        roads_feature_cache.clear()
+    roads_feature_cache[cache_key] = {
+        "payload": payload,
+        "expires_at": now + ROADS_FEATURE_CACHE_TTL_SECONDS,
+    }
+    return payload
+
+
+def fetch_roads_vector_tile(z: int, x: int, y: int) -> bytes:
+    if z < ROADS_TILE_MIN_ZOOM:
+        return b""
+    visible_clases = get_roads_visible_clases(z)
+    clase_filter_sql = " AND src.clase = ANY(%s::text[])" if visible_clases is not None else ""
+    tolerance = get_roads_tile_simplify_tolerance(z)
+    geom_expr = "ST_SimplifyPreserveTopology(src.geom, %s)" if tolerance > 0 else "src.geom"
+    sql = f"""
+    WITH tile_envelope AS (
+        SELECT ST_TileEnvelope(%s, %s, %s) AS geom
+    ),
+    candidate AS (
+        SELECT src.core_feature_id, src.id_tramo, src.inspire_id, src.clase,
+               src.clase_code, src.tipo, src.tipo_code, src.nombre, src.codigo,
+               src.titular, src.titular_code, src.sentido, src.acceso,
+               src.estado_fisico, src.estado_fisico_code, src.firme,
+               src.n_carriles, src.orden, src.territory_code,
+               {geom_expr} AS geom
+        FROM pub.road_network_mvt_source AS src
+        CROSS JOIN tile_envelope AS env
+        WHERE src.geom && env.geom AND ST_Intersects(src.geom, env.geom){clase_filter_sql}
+    ),
+    mvtgeom AS (
+        SELECT c.*, ST_AsMVTGeom(c.geom, env.geom, 4096, 64, true) AS geom_mvt
+        FROM candidate AS c
+        CROSS JOIN tile_envelope AS env
+    )
+    SELECT ST_AsMVT(t, %s::text, 4096, 'geom_mvt')
+    FROM (
+        SELECT core_feature_id, id_tramo, inspire_id, clase, clase_code, tipo,
+               tipo_code, nombre, codigo, titular, titular_code, sentido, acceso,
+               estado_fisico, estado_fisico_code, firme, n_carriles, orden,
+               territory_code, geom_mvt
+        FROM mvtgeom
+        WHERE geom_mvt IS NOT NULL
+    ) AS t
+    """
+    params: list[object] = [z, x, y]
+    if tolerance > 0:
+        params.append(tolerance)
+    if visible_clases is not None:
+        params.append(visible_clases)
+    params.append(ROADS_MVT_LAYER_NAME)
+    with get_db_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+            cur.execute(sql, tuple(params))
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return b""
+    return bytes(row[0])
+
+
+def build_roads_cache_headers() -> dict[str, str]:
+    return {"Cache-Control": "public, max-age=30"}
+
+
+def build_roads_tile_cache_headers() -> dict[str, str]:
+    return {"Cache-Control": "public, max-age=300"}
+
+
+@app.get("/api/roads/health")
+def get_roads_health_endpoint():
+    """Estado del WFS de transportes de IDEE para que el frontend decida la fuente activa."""
+    try:
+        data = get_roads_health()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando health de carreteras: {exc}") from exc
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=10"})
+
+
+@app.get("/api/roads/features")
+def get_roads_features(
+    bbox: str = Query(..., description="bbox=minLon,minLat,maxLon,maxLat en EPSG:4326"),
+    limit: int = Query(ROADS_FEATURE_DEFAULT_LIMIT, ge=1, le=ROADS_FEATURE_MAX_LIMIT),
+    zoom: int | None = Query(None, ge=0, le=22, description="Zoom de mapa; activa el filtro escalonado por clase"),
+):
+    """Carreteras por bbox: WFS de IDEE para geometria, IGR-RT local para atributos. Fallback total a IGR-RT local si el WFS falla. Si se pasa zoom, filtra clases segun el escalonado del proyecto."""
+    try:
+        bbox_tuple = parse_roads_bbox(bbox)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        data = fetch_roads_feature_collection(bbox_tuple, limit, zoom)
+        headers = build_roads_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando carreteras: {exc}") from exc
+    return JSONResponse(content=data, headers=headers, media_type="application/geo+json")
+
+
+@app.get("/api/roads/tiles/{z:int}/{x:int}/{y:int}.mvt")
+def get_roads_vector_tile(z: int, x: int, y: int):
+    """Vector tiles MVT del fallback local de carreteras IGR-RT."""
+    if z < 0 or x < 0 or y < 0:
+        raise HTTPException(status_code=400, detail="Coordenadas de tesela no validas")
+    try:
+        tile = fetch_roads_vector_tile(z, x, y)
+        headers = build_roads_tile_cache_headers()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Error consultando tesela MVT de carreteras: {exc}") from exc
+    return Response(content=tile, media_type="application/vnd.mapbox-vector-tile", headers=headers)
+
+
 @app.get("/api/landcover")
 def get_landcover():
     """Capa landcover filtrada publicada desde PostGIS."""

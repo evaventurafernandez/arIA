@@ -13,6 +13,7 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 - Pipeline histórico diario de focos NASA FIRMS persistido en `PostgreSQL + PostGIS`, con timeline, estadísticas país y GeoJSON por fecha.
 - Script auxiliar para generar `data/nucleos.geojson` con núcleos de población del IGN.
 - Decisión documentada de usar NASA FIRMS como fuente de focos activos tras contrastarla con EFFIS/Copernicus, evitando publicar una capa EFFIS derivada de teselas.
+- Capa contextual de carreteras híbrida: **WFS de transportes de IDEE** como fuente primaria (`tn-ro:RoadLink`, geometría fresca + `inspireId.localId`) enriquecida por join contra `core.road_segment` derivada de IGR-RT (IGN/CNIG), con **fallback MVT local** cuando el WFS no responde. Escalonado por zoom (autopistas desde z=7, urbano desde z=14, senda desde z=16), índices GIST parciales, simplificación geométrica y gzip global. Badge en la UI que indica fuente activa.
 
 ## Estructura
 
@@ -206,6 +207,36 @@ python generar_nucleos.py
 
 Los focos activos de EFFIS/Copernicus se evaluaron como posible capa de contexto y comparación con NASA FIRMS, pero no se mantienen como capa operativa del visor. La razón principal es que el acceso disponible para ese prototipo procedía de teselas WMTS/WMS rasterizadas, no de un servicio vectorial con atributos equivalentes a FIRMS. Para evitar una capa diaria derivada por píxeles, sin atributos originales y con mantenimiento adicional, el visor publica únicamente focos NASA FIRMS y conserva EFFIS para índices FWI/DC.
 
+La capa de carreteras combina dos fuentes: el **WFS de transportes de IDEE** como primaria y la copia local **IGR-RT** del IGN/CNIG como fallback consultable. El fallback local se cargó en PostGIS una vez con los siguientes pasos (no son necesarios para arrancar el visor si los esquemas ya existen; sirven como referencia para reproducir el setup):
+
+1. Asegura las estructuras de IGR-RT en PostgreSQL/PostGIS:
+
+```bash
+docker compose up -d postgres
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/018_igr_rt_source.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/019_igr_rt_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/020_igr_rt_pub.sql
+```
+
+2. Descarga manualmente los 52 ZIP provinciales del CNIG (50 provincias + Ceuta + Melilla) desde el [Centro de Descargas del CNIG, Redes de Transporte](https://centrodedescargas.cnig.es/CentroDescargas/redes-transporte) y déjalos en `data-store/files/raw/ign/igr_rt/RT_*_gpkg.zip`.
+
+3. Importa los 52 ZIP a `source.igr_rt_tramo_vial`:
+
+```bash
+docker compose run --rm gdal python3 /work/infra/ingest/import_igr_rt_source.py
+```
+
+4. Consolida `core.road_segment` (una fila por `id_tramo`, sentinelas a `NULL`, geometría 2D) y refresca la publicación MVT:
+
+```bash
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_igr_rt_core.sql
+docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_igr_rt_pub.sql
+```
+
+El primer `REFRESH` de `pub.road_network_mvt_source` no puede ser `CONCURRENTLY` porque la materialized view nace vacía; los refrescos posteriores ya van con `CONCURRENTLY`. Tiempos aproximados en local: ~50 min para `core`, ~20 min para `pub` (10,7M tramos de origen → 9,9M tramos representantes únicos).
+
+La fuente principal del visor pasa a llamar al WFS de IDEE en tiempo real (`/api/roads/features`); el local sólo se usa para enriquecer atributos por `id_tramo` y como fallback completo cuando el WFS falla. No requiere claves API.
+
 ## Ejecutar
 
 Arranca el servidor con Uvicorn:
@@ -239,6 +270,9 @@ http://127.0.0.1:8000
 - `GET /api/landcover/point?lon=...&lat=...&bbox=...&width=...&height=...&i=...&j=...&crs=EPSG:3857`: consulta de atributos por punto vía `GetFeatureInfo` sobre el WMS de IGN.
 - `GET /api/landcover/features?bbox=minx,miny,maxx,maxy`: endpoint auxiliar de depuración/detalle espacial desde `core.landcover_polygon`.
 - `GET /api/landcover/features/{id}`: detalle GeoJSON de una feature individual de `core.landcover_polygon`.
+- `GET /api/roads/health`: probe al WFS de transportes de IDEE (`GetCapabilities` con timeout corto, caché 30s). Devuelve `status: ok|degraded|down`, `latency_ms` y `checked_at`.
+- `GET /api/roads/features?bbox=minLon,minLat,maxLon,maxLat&limit=N&zoom=Z`: GeoJSON de carreteras en bbox. Primero llama al WFS de IDEE para obtener `tn-ro:RoadLink` (geometría + `inspireId.localId`), después enriquece atributos por `id_tramo` contra `core.road_segment`. Si el WFS falla, cae internamente a sólo-local con el mismo contrato. Aplica filtro por clase según `zoom` (escalonado).
+- `GET /api/roads/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales MVT desde `pub.road_network_mvt_source` (fallback local). Aplica filtro por clase según `z` e índices GIST parciales por familia de clase; mínimo zoom 7.
 
 El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 
@@ -251,3 +285,7 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 - La capa `landcover` se valida en arranque comprobando acceso a `pub.landcover_filtered`, `pub.landcover_mvt_source` y, si existe, `pub.landcover_mvt_class_source`.
 - El visor renderiza `landcover` con `Leaflet.VectorGrid` sobre teselas `MVT` servidas por FastAPI desde PostGIS, usando `pub.landcover_mvt_class_source` hasta `z=8` y `pub.landcover_mvt_source` a partir de `z=9`.
 - Las capas WMS se consultan desde servicios externos, por lo que su disponibilidad depende de esos proveedores.
+- La capa de carreteras usa el **WFS de transportes de IDEE** como fuente primaria y la copia local **IGR-RT** en PostGIS como fallback. A zoom ≥ 10 el cliente intenta primero la ruta primaria; por debajo de ese umbral siempre sirve la teselación MVT local (el bbox sería demasiado grande para el WFS). El badge junto al checkbox indica la fuente activa: `WFS+local` (verde), `MVT local · zoom bajo` (azul) o `MVT local · WFS no responde` (ámbar). El proceso completo está documentado en `doc/notas/06-poblacion-carreteras-y-espacios-protegidos/proceso-capa-carreteras-idee-wfs-y-fallback-igr-rt.md`.
+- La simbología de carreteras (colores y grosores por clase) es **convención propia del proyecto**, inspirada en OpenStreetMap (Mapnik default), IGN Mapa Base, Google Maps y OpenCycleMap. No procede de un estilo SLD oficial.
+- El chat LLM expone `queryRoadsNearPoint(lon, lat, radius_m, max_results, classes?)` como tool consultable: devuelve los tramos viarios IGR-RT más cercanos a una coordenada (todos los atributos del contrato común + `distance_m`). Útil para preguntas tipo "qué carretera está más próxima al foco X" o "qué autopistas pasan cerca del aviso Y".
+- IGR-RT del IGN/CNIG tiene licencia compatible con CC-BY 4.0; al usarlo se debe acreditar el origen con la fórmula oficial de la versión descargada. El WFS de IDEE es servicio público bajo SCNE; se acredita como IDEE/IGN.

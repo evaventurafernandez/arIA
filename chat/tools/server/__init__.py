@@ -12,3 +12,4 @@ from chat.tools.server import summarize_situation  # noqa: F401
 from chat.tools.server import explain_term  # noqa: F401
 from chat.tools.server import query_aemet_max_temp_history  # noqa: F401
 from chat.tools.server import aemet_warnings_near_population  # noqa: F401
+from chat.tools.server import query_roads_near_point  # noqa: F401
