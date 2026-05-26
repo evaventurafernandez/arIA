@@ -1,5 +1,7 @@
 .env
+.env.backup_*
 .venv/
+venv/
 __pycache__/
 *.pyc
 data/CLC2018_ES.gpkg
@@ -9,3 +11,11 @@ data-store/files/
 data-store/postgres/data/
 tmp/
 */**/logs/
+
+# Logs locales de codex/uvicorn (pueden crecer a GBs y bloquear push a GitHub)
+.codex-*.log
+.codex-*.out
+.codex-*.err
+*.log
+uvicorn.err.log
+uvicorn.out.log
