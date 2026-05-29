@@ -1716,17 +1716,21 @@ async def fetch_aemet_alerts() -> list[dict]:
 
     async with httpx.AsyncClient(timeout=30) as client:
         for area in ["esp", "can"]:
-            r1 = await client.get(f"{base}/avisos_cap/ultimoelaborado/area/{area}", headers=headers)
-            r1.raise_for_status()
-            meta = r1.json()
-            if meta.get("estado") != 200:
+            try:
+                r1 = await client.get(f"{base}/avisos_cap/ultimoelaborado/area/{area}", headers=headers)
+                r1.raise_for_status()
+                meta = r1.json()
+                if meta.get("estado") != 200:
+                    continue
+                data_url = meta.get("datos")
+                if not data_url:
+                    continue
+                r2 = await client.get(data_url)
+                r2.raise_for_status()
+                content = r2.content
+            except (httpx.HTTPError, ValueError) as e:
+                print(f"  AEMET avisos area={area} no disponible: {e!s}")
                 continue
-            data_url = meta.get("datos")
-            if not data_url:
-                continue
-            r2 = await client.get(data_url)
-            r2.raise_for_status()
-            content = r2.content
             if content[:2] == b'\x1f\x8b':
                 content = gzip.decompress(content)
             with tarfile.open(fileobj=io.BytesIO(content)) as tar:

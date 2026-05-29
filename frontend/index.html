@@ -215,13 +215,17 @@
 <aside id="chat-panel" hidden aria-label="Asistente MeteoVisor">
   <header id="chat-panel-header">
     <span class="chat-panel-title">Asistente MeteoVisor</span>
-    <button id="chat-panel-close" type="button" aria-label="Cerrar">&times;</button>
+    <div class="chat-panel-actions">
+      <button id="chat-clear" type="button" aria-label="Limpiar conversación">Limpiar</button>
+      <button id="chat-panel-close" type="button" aria-label="Cerrar">&times;</button>
+    </div>
   </header>
   <div id="chat-messages" class="chat-messages"></div>
   <form id="chat-form" class="chat-form" autocomplete="off">
     <textarea id="chat-input" class="chat-input" rows="2"
               placeholder="Pregunta o pide una accion sobre el mapa..."></textarea>
     <button id="chat-send" type="submit">Enviar</button>
+    <button id="chat-cancel" type="button" aria-label="Detener consulta" hidden>Detener</button>
   </form>
   <div id="chat-status" class="chat-status" aria-live="polite"></div>
 </aside>

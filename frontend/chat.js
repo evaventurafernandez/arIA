@@ -23,6 +23,11 @@ const CHAT_LAYER_CHECKBOX = {
   corine_wms: 'chk-corine_wms',
 };
 
+const CHAT_WELCOME_MESSAGE = (
+  'Pregunta por avisos AEMET, focos FIRMS o areas quemadas, o pide acciones ' +
+  'sobre el mapa (centrar, activar capas, filtrar).'
+);
+
 let chatResultsLayer = null;
 
 function chatToolFlyTo(args) {
@@ -197,9 +202,15 @@ class ChatClient {
     this.formEl = opts.formEl;
     this.inputEl = opts.inputEl;
     this.sendBtn = opts.sendBtn;
+    this.cancelBtn = opts.cancelBtn;
+    this.clearBtn = opts.clearBtn;
     this.statusEl = opts.statusEl;
+    this.welcomeMessage = opts.welcomeMessage || '';
     this.history = [];
     this.sending = false;
+    this.abortController = null;
+    this.requestId = 0;
+    this.clearToken = 0;
 
     const self = this;
     this.formEl.addEventListener('submit', function (ev) {
@@ -212,6 +223,16 @@ class ChatClient {
         self.send();
       }
     });
+    if (this.cancelBtn) {
+      this.cancelBtn.addEventListener('click', function () {
+        self.cancel();
+      });
+    }
+    if (this.clearBtn) {
+      this.clearBtn.addEventListener('click', function () {
+        self.clearConversation();
+      });
+    }
   }
 
   appendMessage(role, html, extraClass) {
@@ -227,10 +248,60 @@ class ChatClient {
     this.statusEl.textContent = text || '';
   }
 
+  renderWelcomeMessage() {
+    if (this.welcomeMessage) {
+      this.appendMessage('system', this.welcomeMessage);
+    }
+  }
+
   setSending(flag) {
     this.sending = flag;
     this.sendBtn.disabled = flag;
     this.inputEl.disabled = flag;
+    if (this.cancelBtn) {
+      this.cancelBtn.hidden = !flag;
+      this.cancelBtn.disabled = !flag;
+    }
+  }
+
+  cancel() {
+    if (!this.sending || !this.abortController) return;
+    this.setStatus('Cancelando...');
+    if (this.cancelBtn) this.cancelBtn.disabled = true;
+    this.abortController.abort();
+  }
+
+  clearConversation() {
+    this.clearToken += 1;
+    this.requestId += 1;
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this.history = [];
+    this.messagesEl.replaceChildren();
+    this.setStatus('');
+    this.setSending(false);
+    this.renderWelcomeMessage();
+    this.inputEl.focus();
+  }
+
+  markAssistantCancelled(uiState) {
+    if (!uiState || !uiState.streamingBlock) return;
+    if (uiState.streamingBlock._cleared) {
+      this.appendMessage('system', 'Consulta detenida por el usuario.');
+      return;
+    }
+    uiState.streamingBlock.classList.add('chat-block-cancelled');
+    const title = uiState.streamingBlock.querySelector('.chat-block-title');
+    if (title) {
+      title.classList.remove('chat-loading-title');
+      title.textContent = 'Consulta detenida';
+    }
+    if (uiState.streamingBody && !uiState.streamBuffer) {
+      uiState.streamingBody.textContent = 'Cancelada por el usuario.';
+    }
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
   startAssistantMessage() {
@@ -349,7 +420,8 @@ class ChatClient {
     if (!text) return;
 
     this.appendMessage('user', chatFormatText(text));
-    this.history.push({ role: 'user', content: text });
+    const userHistoryMessage = { role: 'user', content: text };
+    this.history.push(userHistoryMessage);
     this.inputEl.value = '';
     this.setSending(true);
     this.setStatus('Enviando...');
@@ -357,11 +429,17 @@ class ChatClient {
     const uiState = this.startAssistantMessage();
     const pendingClientActions = [];
     const traceById = {};
+    const controller = new AbortController();
+    const requestId = this.requestId + 1;
+    const requestClearToken = this.clearToken;
+    this.requestId = requestId;
+    this.abortController = controller;
 
     try {
       const resp = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        signal: controller.signal,
         body: JSON.stringify({ messages: this.history }),
       });
       if (!resp.ok) {
@@ -371,12 +449,14 @@ class ChatClient {
       if (!resp.body) {
         throw new Error('Respuesta sin body de stream.');
       }
+      this.setStatus('Procesando...');
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
       // Procesa una pieza SSE: bloques separados por linea en blanco doble.
       const processChunk = (chunk) => {
+        if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
         const events = chunk.split(/\n\n/);
         for (const ev of events) {
           if (!ev.trim()) continue;
@@ -396,6 +476,7 @@ class ChatClient {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
         buffer += decoder.decode(value, { stream: true });
         // Cada vez que tengamos al menos un evento completo (doble salto), procesar.
         let idx;
@@ -406,8 +487,10 @@ class ChatClient {
         }
       }
       // flush final
+      if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
       if (buffer.trim()) processChunk(buffer);
 
+      if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
       this.setStatus('');
       // Ejecutar las acciones de cliente al final.
       this.executeClientActions(pendingClientActions);
@@ -417,11 +500,26 @@ class ChatClient {
         this.history.push({ role: 'assistant', content: uiState.streamBuffer });
       }
     } catch (err) {
+      if ((err && err.name === 'AbortError') || controller.signal.aborted) {
+        if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
+        if (this.history[this.history.length - 1] === userHistoryMessage) {
+          this.history.pop();
+        }
+        this.markAssistantCancelled(uiState);
+        this.setStatus('Consulta detenida');
+        return;
+      }
+      if (this.requestId !== requestId || this.clearToken !== requestClearToken) return;
       this.appendMessage('error', chatEscapeHtml('Error: ' + (err.message || err)));
       this.setStatus('Error en la peticion');
     } finally {
-      this.setSending(false);
-      this.inputEl.focus();
+      if (this.requestId === requestId) {
+        if (this.abortController === controller) {
+          this.abortController = null;
+        }
+        this.setSending(false);
+        this.inputEl.focus();
+      }
     }
   }
 
@@ -480,13 +578,13 @@ class ChatClient {
     formEl: document.getElementById('chat-form'),
     inputEl: document.getElementById('chat-input'),
     sendBtn: document.getElementById('chat-send'),
+    cancelBtn: document.getElementById('chat-cancel'),
+    clearBtn: document.getElementById('chat-clear'),
     statusEl: document.getElementById('chat-status'),
+    welcomeMessage: CHAT_WELCOME_MESSAGE,
   });
 
-  client.appendMessage(
-    'system',
-    'Pregunta por avisos AEMET, focos FIRMS o areas quemadas, o pide acciones sobre el mapa (centrar, activar capas, filtrar).'
-  );
+  client.renderWelcomeMessage();
 
   fab.addEventListener('click', function () {
     panel.hidden = false;
