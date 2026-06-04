@@ -1,0 +1,119 @@
+% =====================================================================
+%  Referencias TFG - Meteovisor
+%  Generado: 2026-06-01
+%  Copiar a la plantilla LaTeX (C:\Users\evave\Documents\tfg-latex\)
+%
+%  AVISO: revisar los campos marcados con "% VERIFICAR".
+%  No se han inventado fechas ni autores: donde no consta con certeza
+%  se deja nota o se omite. urldate = fecha de consulta (hoy).
+% =====================================================================
+
+% ---------- Detección de incendios (NASA / VIIRS / FIRMS) ----------
+
+@manual{viirs_af_375m_userguide,
+  title        = {{VIIRS} Collection 2 Active Fire 375\,m -- User Guide, v1.2},
+  organization = {NASA Earthdata / LANCE-FIRMS},
+  year         = {2025},                       % VERIFICAR mes (ruta indica 2025-06)
+  url          = {https://www.earthdata.nasa.gov/s3fs-public/2025-06/VIIRS_C2_AF-375m_User_Guide_1.2.pdf},
+  urldate      = {2026-06-01}
+}
+
+@manual{viirs_ba_userguide,
+  title        = {{VIIRS} Collection 2 Burned Area -- User Guide, v1.1},
+  organization = {NASA Earthdata},
+  note         = {Fecha y URL directa del PDF pendientes de confirmar}, % VERIFICAR
+  url          = {https://www.earthdata.nasa.gov/data/instruments/viirs/viirs-i-band-375-m-active-fire-data},
+  urldate      = {2026-06-01}
+}
+
+@misc{nasa_arset_fire_p4,
+  title        = {Teledetecci\'on de incendios con datos satelitales (Parte 4)},
+  author       = {{NASA Applied Sciences -- ARSET}},
+  year         = {2021},                       % VERIFICAR (ruta indica 2021-05)
+  howpublished = {Material de formaci\'on ARSET, en espa\~nol},
+  url          = {https://appliedsciences.nasa.gov/sites/default/files/2021-05/Fire_Part4_Spanish_0.pdf},
+  urldate      = {2026-06-01}
+}
+
+@misc{firms_fire_academy,
+  title        = {{FIRMS} Fire Data Academy},
+  author       = {{NASA LANCE / FIRMS}},
+  howpublished = {Recurso web de formaci\'on},
+  url          = {https://firms.modaps.eosdis.nasa.gov/academy/},
+  urldate      = {2026-06-01}
+}
+
+% ---------- Copernicus / EFFIS (\'area quemada y da\~nos) ----------
+
+@misc{effis_rapid_damage,
+  title        = {{EFFIS} -- Rapid Damage Assessment (technical background)},
+  author       = {{European Forest Fire Information System (EFFIS), Copernicus EMS}},
+  organization = {Joint Research Centre, European Commission},
+  howpublished = {\url{https://forest-fire.emergency.copernicus.eu/about-effis/technical-background/rapid-damage-assessment}},
+  urldate      = {2026-06-01}
+}
+
+% ---------- Coberturas del suelo (CORINE Land Cover) ----------
+
+@manual{clc_nomenclature_guide,
+  title        = {{CORINE} Land Cover -- Nomenclature Illustrated Guide},
+  organization = {European Environment Agency (EEA) / Copernicus Land Monitoring Service},
+  note         = {A\~no y URL p\'ublica estable pendientes de confirmar}, % VERIFICAR
+  urldate      = {2026-06-01}
+}
+
+% ---------- Meteorolog\'ia (AEMET) ----------
+
+@manual{aemet_plan_meteoalerta,
+  title        = {Plan Meteoalerta: avisos de fen\'omenos meteorol\'ogicos adversos},
+  organization = {Agencia Estatal de Meteorolog\'ia (AEMET)},
+  note         = {Versi\'on/a\~no vigente pendiente de confirmar},      % VERIFICAR
+  url          = {https://www.aemet.es/documentos/es/eltiempo/prediccion/avisos/plan_meteoalerta/plan_meteoalerta.pdf},
+  urldate      = {2026-06-01}
+}
+
+% ---------- Red de carreteras (IGN) ----------
+
+@manual{ign_igr_rt_v19,
+  title        = {Modelo F\'isico de la Informaci\'on Geogr\'afica de Referencia de Redes de Transporte (IGR-RT), v1.9},
+  organization = {Instituto Geogr\'afico Nacional (IGN) / CNIG},
+  note         = {Fecha de publicaci\'on pendiente de confirmar; licencia CC-BY 4.0 (verificar)}, % VERIFICAR
+  url          = {https://centrodedescargas.cnig.es/CentroDescargas/documentos/ModeloFisico_IGR-RT_V1_9_publicado.pdf},
+  urldate      = {2026-06-01}
+}
+
+% ---------- Informes institucionales ----------
+
+@techreport{pc_incendios_2024,
+  title       = {Informe Final Campa\~na Incendios Forestales 2024},
+  institution = {Direcci\'on General de Protecci\'on Civil y Emergencias (Ministerio del Interior)},
+  year        = {2024},                        % VERIFICAR fecha exacta de publicaci\'on
+  url         = {https://www.proteccioncivil.es/documents/20121/0/Informe%20Final%20Campa%C3%B1a%20Incendios%20Forestales%202024.pdf},
+  urldate     = {2026-06-01}
+}
+
+% ---------- Estado del arte: GIS agéntico / LLM ----------
+
+@misc{carto_mcp_server,
+  title        = {{CARTO} {MCP} Server: turn your {AI} agents into geospatial experts},
+  author       = {{CARTO}},
+  note         = {Fecha del post pendiente de confirmar},              % VERIFICAR
+  howpublished = {Blog de CARTO; documentaci\'on en \url{https://docs.carto.com/carto-mcp-server/carto-mcp-server}},
+  url          = {https://carto.com/blog/carto-mcp-server-turn-your-ai-agents-into-geospatial-experts/},
+  urldate      = {2026-06-01}
+}
+
+@misc{carto_platform,
+  title        = {{CARTO}: The Agentic {GIS} Platform},
+  author       = {{CARTO}},
+  howpublished = {\url{https://carto.com/}},
+  urldate      = {2026-06-01}
+}
+
+@misc{pangeai,
+  title        = {{PangeAI}: instant, agent-driven spatial analysis and decision-making},
+  howpublished = {Ficha de producto en Product Hunt},
+  note         = {Autor\'ia y fecha pendientes de confirmar},          % VERIFICAR
+  url          = {https://www.producthunt.com/products/pangeai},
+  urldate      = {2026-06-01}
+}
