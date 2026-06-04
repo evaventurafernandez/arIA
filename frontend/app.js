@@ -1,5 +1,6 @@
 // Mapa base
 const IGN_ATTRIBUTION = '© Instituto Geográfico Nacional / CNIG';
+const AEMET_ATTRIBUTION = 'Avisos © AEMET';
 
 const map = L.map('map', {
   zoomControl: false,
@@ -113,9 +114,6 @@ resetBtn.onAdd = () => {
       if (chk) chk.checked = false;
       toggleWMS(key, false);
     });
-    // Desactivar CORINE
-    if (corineLayer) { map.removeLayer(corineLayer); }
-    corineVisible = false;
     const chkNucleos = document.getElementById('chk-nucleos_poblacion');
     if (chkNucleos) chkNucleos.checked = false;
     toggleNucleos(false);
@@ -567,11 +565,10 @@ function updateLegend() {
   if (!el) return;
  
   const wmsKeys = Object.keys(wmsActive);
-  const showCorine = corineVisible && corineLayer;
   const showNucleos = nucleosVisible && nucleosLayer;
   const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
   const showAemetMaxTemp = aemetMaxTempVisible && !aemetMaxTempError;
-  if (!wmsKeys.length && !showCorine && !showNucleos && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
+  if (!wmsKeys.length && !showNucleos && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
  
   el.style.display = 'block';
 
@@ -614,20 +611,6 @@ function updateLegend() {
     </div>`;
   }).join('');
  
-  const corineHtml = showCorine ? (() => {
-    const items = CORINE_LEGEND.items.map(i =>
-      `<div class="leg-item">
-        <span class="leg-dot" style="background:${i.color}"></span>
-        <span class="leg-label">${i.label}</span>
-      </div>`
-    ).join('');
-    return `<div class="leg-block">
-      <div class="leg-title">${CORINE_LEGEND.title}</div>
-      ${items}
-      <div class="leg-note">${CORINE_LEGEND.note}</div>
-    </div>`;
-  })() : '';
-
   const nucleosHtml = showNucleos ? (() => {
     const items = NUCLEOS_LEGEND.items.map(i =>
       `<div class="leg-item">
@@ -659,45 +642,18 @@ function updateLegend() {
       <div class="leg-note">Capa histórica diaria filtrada a AT;Temperaturas máximas.</div>
     </div>` : '';
  
-  el.innerHTML = firmsHtml + aemetMaxTempHtml + wmsHtml + corineHtml + nucleosHtml;
+  el.innerHTML = firmsHtml + aemetMaxTempHtml + wmsHtml + nucleosHtml;
 }
  
-// CORINE (vector tiles MVT desde backend)
-let corineLayer   = null;   // L.vectorGrid instance
-let corineVisible = false;
-let corineTooltip = null;
 let corineMapPopup = null;
 let corinePointSelectionLayer = null;
 let corinePointQueryController = null;
 let corinePointQueryToken = 0;
 let fireLandcoverBatchToken = 0;
-const CORINE_VECTOR_TILE_URL = '/api/landcover/tiles/{z}/{x}/{y}.mvt';
 const LANDCOVER_POINT_QUERY_SIZE = 101;
 const LANDCOVER_FIRE_QUERY_ZOOM = 16;
 const FIRE_LANDCOVER_WORKERS = 4;
 const fireLandcoverInfoCache = new Map();
-
-const CORINE_CLASSES = [
-  { code: '1001', color: '#e6004d', label: 'Tejido urbano' },
-  { code: '121', color: '#cc4df2', label: 'Zonas industriales o comerciales' },
-  { code: '211', color: '#ffffa8', label: 'Tierras de labor secano' },
-  { code: '242', color: '#e6e600', label: 'Mosaico de cultivos' },
-  { code: '311', color: '#4ce600', label: 'Bosque de frondosas' },
-  { code: '312', color: '#267300', label: 'Bosque de coníferas' },
-  { code: '313', color: '#70a800', label: 'Bosque mixto' },
-  { code: '321', color: '#d4e6a5', label: 'Pastizales naturales' },
-  { code: '322', color: '#a8a800', label: 'Brezales y matorrales' },
-  { code: '323', color: '#d4a46a', label: 'Vegetación esclerófila' },
-  { code: '324', color: '#c8c800', label: 'Matorral en transición' },
-];
-
-const CORINE_CLASS_INDEX = Object.fromEntries(CORINE_CLASSES.map(item => [item.code, item]));
- 
-const CORINE_LEGEND = {
-  title: 'Usos del suelo (filtrado)',
-  items: CORINE_CLASSES.map(item => ({ color: item.color, label: item.label })),
-  note: 'CORINE Land Cover 2018 - IGN/CNIG - selección filtrada de usos del suelo'
-};
 
 const NUCLEOS_POPULATION_CLASSES = [
   { code: 'menor_100', color: '#7fc97f', label: '< 100' },
@@ -837,26 +793,6 @@ function toggleNucleos(enabled) {
   updateLegend();
 }
  
-function getCorineFeatureStyle(properties) {
-  const classInfo = CORINE_CLASS_INDEX[properties.class_code] || null;
-  const color = classInfo?.color || properties.class_color || properties.color || '#888888';
-  return {
-    fill:        true,
-    fillColor:   color,
-    fillOpacity: 0.55,
-    color,
-    opacity:     0.5,
-    weight:      0.2,
-  };
-}
-
-function clearCorineTooltip() {
-  if (corineTooltip) {
-    map.removeLayer(corineTooltip);
-    corineTooltip = null;
-  }
-}
-
 function closeCorineMapPopup(abortQuery = true) {
   if (abortQuery) abortCorinePointQuery();
   const popup = corineMapPopup;
@@ -1159,65 +1095,6 @@ async function handleCorineWmsClick(latlng) {
   }
 }
 
-function ensureCorineTooltip(latlng, content) {
-  if (!corineTooltip) {
-    corineTooltip = L.tooltip({
-      permanent: false,
-      sticky: true,
-      direction: 'top',
-      opacity: 0.95,
-    });
-  }
-  corineTooltip.setLatLng(latlng).setContent(content);
-  if (!map.hasLayer(corineTooltip)) corineTooltip.addTo(map);
-}
-
-function buildCorineLayer() {
-  const layerStyles = {
-    landcover: properties => getCorineFeatureStyle(properties),
-    landcover_mvt_source: properties => getCorineFeatureStyle(properties),
-    'pub.landcover_mvt_source': properties => getCorineFeatureStyle(properties),
-  };
-  const layer = L.vectorGrid.protobuf(CORINE_VECTOR_TILE_URL, {
-    rendererFactory: L.canvas.tile,
-    interactive: true,
-    // El backend sirve MVT de detalle por feature también a zoom alto;
-    // limitarlo a z14 difumina o hace demasiado sutiles manchas pequeñas.
-    maxNativeZoom: 18,
-    vectorTileLayerStyles: layerStyles,
-    getFeatureId: feature => feature.properties.core_feature_id,
-  });
-  layer.on('mouseover', e => {
-    const props = e.layer.properties || {};
-    const label = props.class_label || props.label || 'Uso del suelo';
-    ensureCorineTooltip(e.latlng, label);
-  });
-  layer.on('mousemove', e => {
-    if (corineTooltip) corineTooltip.setLatLng(e.latlng);
-  });
-  layer.on('mouseout', () => {
-    clearCorineTooltip();
-  });
-  layer.on('click', e => {
-    const props = e.layer.properties || {};
-    const label = props.class_label || props.label || 'Uso del suelo';
-    openCorineMapPopup(e.latlng, `<b>${label}</b><br>Código canónico: ${props.class_code || 'n/d'}`);
-  });
-  return layer;
-}
-
-function toggleCorine(enabled) {
-  corineVisible = enabled;
-  if (enabled) {
-    if (!corineLayer) corineLayer = buildCorineLayer();
-    if (corineLayer) corineLayer.addTo(map);
-  } else {
-    clearCorineTooltip();
-    if (corineLayer) map.removeLayer(corineLayer);
-  }
-  updateLegend();
-}
- 
 map.on('click', e => {
   if (!isCorineWmsActive()) return;
   void handleCorineWmsClick(e.latlng);
@@ -2195,6 +2072,7 @@ function renderAemetMaxTempForDate(dateString) {
     pane: AEMET_MAX_TEMP_PANE,
     interactive: true,
     maxNativeZoom: 12,
+    attribution: AEMET_ATTRIBUTION,
     vectorTileLayerStyles: styleByLayer,
     getFeatureId: feature => feature.properties.feature_id,
   });

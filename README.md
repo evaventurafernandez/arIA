@@ -22,7 +22,6 @@ Demo web para visualizar avisos meteorológicos, focos de incendio y capas geogr
 |-- main.py                  # API FastAPI y servidor del frontend
 |-- frontend/                # HTML, CSS y JavaScript del mapa
 |-- data/                    # Datos GeoJSON locales generados
-|-- generar_landcover.py     # Utilidad auxiliar fuera del flujo actual de ingesta
 |-- infra/                   # Infraestructura Docker, SQL e ingesta PostGIS
 |-- generar_nucleos.py       # Descarga y genera data/nucleos.geojson desde IGN
 |-- requirements.txt         # Dependencias Python principales
@@ -65,40 +64,6 @@ FIRMS_HISTORICAL_DEFAULT_DATE_TO=2025-08-31
 `FIRMS_MAP_KEY` es opcional. Si no se informa, la API devolverá una lista vacía de focos de incendio.
 
 ## Preparar datos
-
-La capa `landcover` se publica actualmente desde PostGIS. El backend:
-
-- mantiene `pub.landcover_filtered` como publicación GeoJSON agregada de compatibilidad;
-- usa `pub.landcover_mvt_source` como fuente MVT detallada por feature;
-- y usa `pub.landcover_mvt_class_source` como fuente MVT agregada por clase para bajo zoom.
-
-Los comandos siguientes asumen la configuración por defecto del proyecto (`POSTGRES_DB=meteovisor`, `POSTGRES_USER=meteovisor`). Si has cambiado esos valores en `.env`, sustitúyelos también aquí.
-
-Levanta antes la base de datos:
-
-```bash
-docker compose up -d postgres
-```
-
-Si la base ya existía y necesitas asegurar o actualizar las publicaciones MVT:
-
-```bash
-docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /docker-entrypoint-initdb.d/005_landcover_mvt.sql
-docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
-```
-
-Si necesitas rehacer la ingesta completa de landcover desde el `FileGDB` real:
-
-```bash
-docker compose run --rm gdal python3 /work/infra/ingest/import_landcover_source.py
-docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_core.sql
-docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_pub.sql
-docker compose exec -T postgres psql -U meteovisor -d meteovisor -f /infra/ingest/refresh_landcover_mvt.sql
-```
-
-`import_landcover_source.py` solo deja datos en `source`; la capa no aparece en el visor hasta reconstruir `core` y refrescar `pub.landcover_filtered`, `pub.landcover_mvt_source` y `pub.landcover_mvt_class_source`.
-
-La guía completa de primera carga, validaciones y recargas está en [infra/ingest/README.md](infra/ingest/README.md).
 
 La nueva capa temporal diaria de `burnt area` se apoya en el catálogo Copernicus CLMS, ya sea como `all.zip` o como carpeta extraída, y en una timeline propia del visor:
 
@@ -264,12 +229,7 @@ http://127.0.0.1:8000
 - `GET /api/firms/history/timeline?date_from=2025-05-01&date_to=2025-08-31`: fechas publicadas del histórico FIRMS con cobertura y conteos diarios.
 - `GET /api/firms/history/stats/daily?date_from=2025-05-01&date_to=2025-08-31`: serie diaria país del histórico FIRMS.
 - `GET /api/firms/history/features?date=2025-08-16&source=VIIRS_NOAA20_SP`: GeoJSON de focos históricos por fecha, con filtro opcional de fuente y `bbox`.
-- `GET /api/landcover`: `FeatureCollection` GeoJSON agregado desde `pub.landcover_filtered`.
-- `GET /api/layers/landcover`: metadatos de la capa publicada.
-- `GET /api/landcover/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales `MVT` para render principal de landcover.
-- `GET /api/landcover/point?lon=...&lat=...&bbox=...&width=...&height=...&i=...&j=...&crs=EPSG:3857`: consulta de atributos por punto vía `GetFeatureInfo` sobre el WMS de IGN.
-- `GET /api/landcover/features?bbox=minx,miny,maxx,maxy`: endpoint auxiliar de depuración/detalle espacial desde `core.landcover_polygon`.
-- `GET /api/landcover/features/{id}`: detalle GeoJSON de una feature individual de `core.landcover_polygon`.
+- `GET /api/landcover/point?lon=...&lat=...&bbox=...&width=...&height=...&i=...&j=...&crs=EPSG:3857`: consulta de atributos de uso del suelo CORINE por punto vía `GetFeatureInfo` sobre el WMS de IGN.
 - `GET /api/roads/health`: probe al WFS de transportes de IDEE (`GetCapabilities` con timeout corto, caché 30s). Devuelve `status: ok|degraded|down`, `latency_ms` y `checked_at`.
 - `GET /api/roads/features?bbox=minLon,minLat,maxLon,maxLat&limit=N&zoom=Z`: GeoJSON de carreteras en bbox. Primero llama al WFS de IDEE para obtener `tn-ro:RoadLink` (geometría + `inspireId.localId`), después enriquece atributos por `id_tramo` contra `core.road_segment`. Si el WFS falla, cae internamente a sólo-local con el mismo contrato. Aplica filtro por clase según `zoom` (escalonado).
 - `GET /api/roads/tiles/{z}/{x}/{y}.mvt`: teselas vectoriales MVT desde `pub.road_network_mvt_source` (fallback local). Aplica filtro por clase según `z` e índices GIST parciales por familia de clase; mínimo zoom 7.
@@ -282,8 +242,7 @@ El frontend se sirve desde la carpeta `frontend/` mediante `StaticFiles`.
 - La consulta FIRMS usa por defecto `VIIRS_NOAA21_NRT`, `VIIRS_NOAA20_NRT` y `VIIRS_SNPP_NRT`, con `DAY_RANGE=1` y sin parámetro `DATE` para recibir los datos más recientes. Se lanzan dos consultas territoriales por producto: Península/Baleares/Ceuta/Melilla y Canarias; después se aplica siempre el filtro final por MultiPolygon y se conservan sólo detecciones `confidence` nominal/alta (`n`/`h`).
 - La simbología FIRMS usa `frp` como potencia radiativa del foco en MW mediante categorías visuales de intensidad: <10, 10-50, 50-200 y >200 MW. No son umbrales oficiales NASA de gravedad.
 - Los avisos de AEMET se cargan en memoria durante el arranque. Los focos NASA FIRMS se piden al backend cada vez que el visor se carga o recarga.
-- La capa `landcover` se valida en arranque comprobando acceso a `pub.landcover_filtered`, `pub.landcover_mvt_source` y, si existe, `pub.landcover_mvt_class_source`.
-- El visor renderiza `landcover` con `Leaflet.VectorGrid` sobre teselas `MVT` servidas por FastAPI desde PostGIS, usando `pub.landcover_mvt_class_source` hasta `z=8` y `pub.landcover_mvt_source` a partir de `z=9`.
+- La capa de usos del suelo CORINE se consume como WMS externo del IGN, tanto para la cobertura general como para la consulta puntual por foco (`GetFeatureInfo`).
 - Las capas WMS se consultan desde servicios externos, por lo que su disponibilidad depende de esos proveedores.
 - La capa de carreteras usa el **WFS de transportes de IDEE** como fuente primaria y la copia local **IGR-RT** en PostGIS como fallback. A zoom ≥ 10 el cliente intenta primero la ruta primaria; por debajo de ese umbral siempre sirve la teselación MVT local (el bbox sería demasiado grande para el WFS). El badge junto al checkbox indica la fuente activa: `WFS+local` (verde), `MVT local · zoom bajo` (azul) o `MVT local · WFS no responde` (ámbar). El proceso completo está documentado en `doc/notas/06-poblacion-carreteras-y-espacios-protegidos/proceso-capa-carreteras-idee-wfs-y-fallback-igr-rt.md`.
 - La simbología de carreteras (colores y grosores por clase) es **convención propia del proyecto**, inspirada en OpenStreetMap (Mapnik default), IGN Mapa Base, Google Maps y OpenCycleMap. No procede de un estilo SLD oficial.
