@@ -1,0 +1,39 @@
+/* ============================================================
+   MeteoVisor — Color tokens
+   Dark "control-room" palette. Deep blue-black surfaces,
+   a single blue accent, and a domain palette mapped to the
+   official AEMET alert scale + NASA FIRMS / EFFIS / Copernicus
+   data layers. Source of truth: frontend/style.css + app.js.
+   ============================================================ */
+
+:root {
+  /* ---- Surfaces (darkest → lightest) ---- */
+  --surface-base:    #0f1117;  /* canvas, inputs, recessed wells */
+  --surface-panel:   #1a1d27;  /* header, sidebar, cards chrome  */
+  --surface-sunken:  #11141d;  /* chat header, assistant bubble  */
+  --surface-raised:  #1e2235;  /* active / selected / hover-fill */
+  --surface-note:    #121621;  /* info notes inside lists        */
+
+  /* ---- Borders & hairlines ---- */
+  --border:          #2a2d3a;  /* default 1px divider            */
+  --border-soft:     #232939;  /* note / nested containers       */
+  --border-strong:   #3a3e48;  /* toggle thumb, raised edges     */
+
+  /* ---- Text ---- */
+  --text-strong:     #ffffff;  /* titles, active labels          */
+  --text-body:       #e0e6f0;  /* default reading text           */
+  --text-muted:      #aaaaaa;  /* secondary labels, controls     */
+  --text-subtle:     #777777;  /* meta, counts                   */
+  --text-faint:      #555555;  /* section headers, ticks         */
+  --text-label:      #6f86a6;  /* uppercase blue-gray microcopy  */
+
+  /* ---- Accent (interactive blue) ---- */
+  --accent:          #4a90d9;  /* primary action, focus, selected*/
+  --accent-hover:    #5aa3e8;  /* hover on solid primary         */
+  --accent-bright:   #7ab8f5;  /* link text, descriptions        */
+  --accent-cyan:     #29b6f6;  /* secondary / "info" state       */
+  --accent-future:   #a06af8;  /* forecast / future timeline     */
+
+  /* ---- Focus ring ---- */
+  --ring: 0 0 0 2px rgba(74, 144, 217, 0.18);
+}

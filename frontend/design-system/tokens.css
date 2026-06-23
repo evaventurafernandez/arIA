@@ -1,0 +1,15 @@
+/* ============================================================
+   MeteoVisor Design System — punto de entrada de tokens
+   Manifiesto @import. Define el lenguaje visual del visor como
+   variables CSS (colores, dominio, tipografia, espaciado,
+   efectos). style.css consume estas variables via var(--...).
+
+   Origen: MeteoVisor Design System (Claude Design), generado por
+   ingenieria inversa del propio frontend. Elaboracion propia.
+   ============================================================ */
+
+@import "tokens/colors.css";
+@import "tokens/domain.css";
+@import "tokens/typography.css";
+@import "tokens/spacing.css";
+@import "tokens/effects.css";

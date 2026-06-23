@@ -3,14 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Visor de Alertas - España</title>
+  <title>arIA — Visor meteorológico de España</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="design-system/tokens.css"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
 <header>
   <div class="header-left">
-    <h1>Visor de Alertas España</h1>
+    <h1>arIA</h1>
     <span class="demo-badge">DEMO</span>
     <div id="map-meta">
       <span class="map-meta-item">
@@ -89,19 +90,52 @@
 
   <div id="sidebar">
 
-    <!-- Capas datos -->
+    <!-- 1 · Datos en vivo -->
     <div class="section-fixed">
-      <div class="section-title">Datos</div>
-      <label class="layer-row">
-        <span class="dot" style="background:#FFA500"></span>
-        Avisos AEMET
-        <input type="checkbox" id="chk-alerts" checked />
-      </label>
+      <div class="section-title">Datos en vivo</div>
+
+      <div class="layer-group">
+        <label class="layer-row">
+          <span class="dot" style="background:#FFA500"></span>
+          Avisos AEMET
+          <input type="checkbox" id="chk-alerts" checked />
+        </label>
+
+        <!-- Filtros de avisos, anidados bajo Avisos AEMET -->
+        <div class="layer-subfilters">
+          <div class="filter-block">
+            <div class="section-title">Nivel de peligro</div>
+            <div class="filter-row" id="level-filters">
+              <button class="fbtn verde active"    data-level="Verde">Verde</button>
+              <button class="fbtn amarillo active" data-level="Amarillo">Amarillo</button>
+              <button class="fbtn naranja active"  data-level="Naranja">Naranja</button>
+              <button class="fbtn rojo active"     data-level="Rojo">Rojo</button>
+            </div>
+            <div class="filter-row" id="level-filters">
+              <button class="fbtn all active"  data-level="all">Todos</button>
+              <button class="fbtn none"        data-level="none">Ninguno</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <div class="section-title">Tipo de aviso</div>
+            <select id="event-select">
+              <option value="all">Todos los tipos</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <label class="layer-row">
         <span class="dot" style="background:#E94F37"></span>
         Focos NASA FIRMS
         <input type="checkbox" id="chk-fires" checked />
       </label>
+    </div>
+
+    <!-- 2 · Datos históricos -->
+    <div class="section-fixed">
+      <div class="section-title">Datos históricos</div>
       <label class="layer-row">
         <span class="dot" style="background:#ff9d79"></span>
         Histórico NASA FIRMS
@@ -111,16 +145,6 @@
         <span class="dot" style="background:#ffca3a"></span>
         Histórico AEMET calor
         <input type="checkbox" id="chk-aemet_max_temp_history" />
-      </label>
-    </div>
-
-    <!-- Capas de contexto WMS -->
-    <div class="section-fixed">
-      <div class="section-title">Capas de riesgo</div>
-      <label class="layer-row">
-        <span class="dot" style="background:#1e90ff"></span>
-        Zonas inundables T=10 (MITECO)
-        <input type="checkbox" id="chk-flood"/>
       </label>
       <div class="burnt-area-layer-control">
         <label class="layer-row">
@@ -133,6 +157,16 @@
           <button id="burnt-area-mode-cumulative" class="burnt-area-mode-option" type="button" data-burnt-area-mode="cumulative" aria-pressed="false">Acumulado</button>
         </div>
       </div>
+    </div>
+
+    <!-- 3 · Contexto y riesgos naturales -->
+    <div class="section-fixed">
+      <div class="section-title">Contexto y riesgos naturales</div>
+      <label class="layer-row">
+        <span class="dot" style="background:#1e90ff"></span>
+        Zonas inundables T=10 (MITECO)
+        <input type="checkbox" id="chk-flood"/>
+      </label>
       <label class="layer-row">
         <span class="dot" style="background:#3f88c5"></span>
         Núcleos de población (IGN)
@@ -159,32 +193,6 @@
         Usos del suelo completo WMS (IGN)
         <input type="checkbox" id="chk-corine_wms"/>
       </label>
-    </div>
-
-    <!-- Filtros -->
-    <div class="section-fixed">
-
-      <div class="filter-block">
-        <div class="section-title">Nivel de peligro</div>
-        <div class="filter-row" id="level-filters">
-          <button class="fbtn verde active"    data-level="Verde">Verde</button>
-          <button class="fbtn amarillo active" data-level="Amarillo">Amarillo</button>
-          <button class="fbtn naranja active"  data-level="Naranja">Naranja</button>
-          <button class="fbtn rojo active"     data-level="Rojo">Rojo</button>
-        </div>
-        <div class="filter-row" id="level-filters">
-          <button class="fbtn all active"  data-level="all">Todos</button>
-          <button class="fbtn none"        data-level="none">Ninguno</button>
-        </div>
-      </div>
-
-      <div class="filter-block">
-        <div class="section-title">Tipo de aviso</div>
-        <select id="event-select">
-          <option value="all">Todos los tipos</option>
-        </select>
-      </div>
-
     </div>
 
     <!-- Lista dinámica -->
@@ -215,9 +223,9 @@
   <span class="chat-fab-text">Asistente</span>
 </button>
 
-<aside id="chat-panel" hidden aria-label="Asistente MeteoVisor">
+<aside id="chat-panel" hidden aria-label="Asistente arIA">
   <header id="chat-panel-header">
-    <span class="chat-panel-title">Asistente MeteoVisor</span>
+    <span class="chat-panel-title">Asistente arIA</span>
     <div class="chat-panel-actions">
       <button id="chat-clear" type="button" aria-label="Limpiar conversación">Limpiar</button>
       <button id="chat-panel-close" type="button" aria-label="Cerrar">&times;</button>

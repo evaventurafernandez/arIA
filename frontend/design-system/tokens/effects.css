@@ -1,0 +1,30 @@
+/* ============================================================
+   MeteoVisor — Effects: radii, shadows, transitions
+   Corners are small and consistent (4–10px) with full pills at
+   999px for badges and toggles. Elevation is sparse: the map
+   stays flat, only floating UI (chat, FAB, legend) lifts off
+   the surface with soft black shadows.
+   ============================================================ */
+
+:root {
+  /* ---- Border radii ---- */
+  --radius-xs:  4px;   /* chat input/buttons          */
+  --radius-sm:  5px;   /* nested mode buttons         */
+  --radius-md:  7px;   /* cards, layer rows, controls */
+  --radius-lg:  8px;   /* panels, dialogs             */
+  --radius-pill:999px; /* badges, chips, toggles      */
+
+  /* ---- Shadows / elevation ---- */
+  --shadow-fab:    0 4px 14px rgba(0, 0, 0, 0.40);
+  --shadow-panel:  0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-toggle: inset 0 1px 0 rgba(255,255,255,0.04),
+                   0 4px 10px rgba(0, 0, 0, 0.18);
+  --shadow-thumb:  inset 0 1px 0 rgba(255,255,255,0.05),
+                   0 2px 6px rgba(0, 0, 0, 0.22);
+
+  /* ---- Transitions ---- */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --t-fast:  0.15s;   /* @kind other */ /* hover / border color shifts */
+  --t-med:   0.18s;   /* @kind other */ /* toggle states */
+  --t-slow:  0.24s;   /* @kind other */ /* thumb slide */
+}
