@@ -563,14 +563,20 @@ function getFireDateTimeLabel(f) {
 function updateLegend() {
   const el = document.getElementById('wms-legend');
   if (!el) return;
- 
+  const legendPanel = document.getElementById('legend-panel');
+
   const wmsKeys = Object.keys(wmsActive);
   const showNucleos = nucleosVisible && nucleosLayer;
   const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
   const showAemetMaxTemp = aemetMaxTempVisible && !aemetMaxTempError;
-  if (!wmsKeys.length && !showNucleos && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
- 
+  if (!wmsKeys.length && !showNucleos && !showFirms && !showAemetMaxTemp) {
+    el.style.display = 'none';
+    if (legendPanel) legendPanel.hidden = true;
+    return;
+  }
+
   el.style.display = 'block';
+  if (legendPanel) legendPanel.hidden = false;
 
   const firmsHtml = showFirms ? (() => {
     const frpItems = FIRMS_FRP_CLASSES.map(i =>
@@ -1200,7 +1206,7 @@ function updateTimelineUI() {
   syncTimelinePanelsVisibility();
   const isNow = (tlCurrent - tlMin) < 60000;
   const badge = document.getElementById('tl-badge');
-  badge.textContent = isNow ? 'AHORA' : 'FUTURO';
+  badge.textContent = isNow ? 'AHORA' : 'PRÓXIMOS';
   badge.className = isNow ? '' : 'future';
   document.getElementById('tl-datetime').textContent =
     tlCurrent.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'short'})
@@ -3253,7 +3259,10 @@ function populateEventFilter() {
   sel.innerHTML = '<option value="all">Todos los tipos</option>';
   tipos.forEach(t => {
     const o = document.createElement('option');
-    o.value = t; o.textContent = t; sel.appendChild(o);
+    o.value = t;
+    const corto = t.replace(/^Aviso\s+de\s+/i, '');
+    o.textContent = corto.charAt(0).toUpperCase() + corto.slice(1);
+    sel.appendChild(o);
   });
 }
 
@@ -3489,7 +3498,12 @@ function renderFires() {
 function highlightCard(id) {
   document.querySelectorAll('.card').forEach(c => c.classList.remove('highlighted'));
   const card = document.querySelector(`.card[data-id="${id}"]`);
-  if (card) { card.classList.add('highlighted'); card.scrollIntoView({ behavior:'smooth', block:'nearest' }); }
+  if (card) {
+    const grp = card.closest('details.card-group');
+    if (grp) grp.open = true;
+    card.classList.add('highlighted');
+    card.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
 }
 
 function renderList() {
@@ -3522,7 +3536,7 @@ function renderList() {
       return da !== db ? da-db : (order[a.level]||9)-(order[b.level]||9);
     });
 
-    el.innerHTML = sorted.map(a => {
+    const renderAlertCard = (a) => {
       const future = !isActive(a);
       const desc = a.description ? `<div class="desc">${a.description}</div>` : '';
       const floodIcon = isFloodRelated(a.event)
@@ -3533,12 +3547,33 @@ function renderList() {
         <div class="name">${normalizeEvent(a.event)} ${floodIcon}</div>
         <div class="area">${a.area_name}</div>
         <div class="meta">
-          <span class="badge" style="background:${a.level_color}22;color:${a.level_color}">${a.level}</span>
           ${future ? `<span class="future-tag">Inicia ${fmtDate(a.onset)}</span>` : ''}
           <span class="time">${fmtDate(a.onset)}</span>
         </div>
         ${desc}
       </div>`;
+    };
+    // Las fichas se recogen agrupadas por nivel de peligro; cada grupo es
+    // un <details> expandible/contraible. Se conserva el orden activos->futuros
+    // dentro de cada nivel (heredado del 'sorted' previo).
+    const LEVEL_GROUP_ORDER = ['Rojo', 'Naranja', 'Amarillo', 'Verde'];
+    const byLevel = {};
+    sorted.forEach(a => { (byLevel[a.level] = byLevel[a.level] || []).push(a); });
+    const groupOrder = LEVEL_GROUP_ORDER.filter(lv => byLevel[lv]);
+    Object.keys(byLevel).forEach(lv => { if (!groupOrder.includes(lv)) groupOrder.push(lv); });
+    el.innerHTML = groupOrder.map(lv => {
+      const rows = byLevel[lv];
+      const color = rows[0].level_color;
+      const cards = rows.map(renderAlertCard).join('');
+      return `<details class="card-group">
+        <summary class="card-group-header">
+          <span class="card-group-caret" aria-hidden="true">&#9662;</span>
+          <span class="card-group-dot" style="background:${color}"></span>
+          <span class="card-group-name">${lv}</span>
+          <span class="card-group-count">${rows.length}</span>
+        </summary>
+        <div class="card-group-body">${cards}</div>
+      </details>`;
     }).join('');
 
   } else if (listMode === 'fires') {

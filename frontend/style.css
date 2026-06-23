@@ -25,7 +25,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 }
 #map-zoom, #visible-bbox, #pointer-coord { color: var(--text-body); }
 #stats-bar { font-size: 11px; color: var(--text-subtle); flex-shrink: 0; }
-#stats-bar b { color: #bbb; }
+#stats-bar b { color: var(--text-muted); }
 
 .main { display: flex; flex: 1; overflow: hidden; }
 
@@ -79,7 +79,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: var(--radius-pill);
   background: var(--surface-raised); color: var(--accent); border: 1px solid var(--accent); letter-spacing: .5px;
 }
-#tl-badge.future { background: #2a1e35; color: var(--accent-future); border-color: var(--accent-future); }
+#tl-badge.future { background: var(--surface-raised); color: var(--text-muted); border-color: var(--border); }
 #ht-badge {
   font-size: 10px;
   font-weight: 700;
@@ -100,7 +100,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#tl-datetime { color: #bbb; }
+#tl-datetime { color: var(--text-muted); }
 #ht-datetime { color: #f1e6e0; }
 #ht-meta {
   display: flex;
@@ -233,7 +233,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   user-select: none;
   overflow: hidden;
 }
-#tl-ticks { color: #444; }
+#tl-ticks { color: var(--text-faint); }
 #ht-ticks { color: #9aa4b8; }
 #tl-ticks span,
 #ht-ticks span {
@@ -267,10 +267,21 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 /* Sidebar */
 #sidebar {
   width: 290px; background: var(--surface-panel); border-left: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; flex-shrink: 0;
+  display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+}
+/* Bloque superior con las secciones de capas (scroll propio); deja sitio
+   al chat integrado, que ocupa el espacio restante abajo. */
+.sidebar-layers {
+  flex: 0 0 auto;
+  overflow-x: hidden;
 }
 .section-fixed { padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.section-title { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+.section-title { font-size: 10px; font-weight: 700; color: var(--text-label); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+/* Cabeceras de seccion principales: misma tipografia que la del asistente */
+.section-fixed > .section-title { font-size: 11px; font-weight: 700; }
+/* Cabecera de seccion con el rango de fechas a la derecha (Datos historicos) */
+.section-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.section-range { font-size: 9px; font-weight: 400; color: var(--text-subtle); letter-spacing: .2px; text-transform: none; }
 
 /* Capas */
 .layer-row {
@@ -289,6 +300,8 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   white-space: nowrap;
 }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+/* El diseno prescinde de los puntos de color en las filas de capas */
+.layer-row .dot { display: none; }
 
 .burnt-area-layer-control { margin-bottom: 4px; }
 .burnt-area-layer-control .layer-row { margin-bottom: 4px; }
@@ -350,6 +363,13 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   pointer-events: none;
   transition: opacity var(--t-fast);
 }
+/* Igual para Areas quemadas: su filtro Diario/Acumulado se atenua y
+   desactiva cuando la capa esta apagada, y se reactiva al encenderla. */
+.burnt-area-layer-control:has(#chk-burnt_area_daily:not(:checked)) .burnt-area-mode-control {
+  opacity: .5;
+  pointer-events: none;
+  transition: opacity var(--t-fast);
+}
 
 /* Filtros */
 .filter-block { margin-bottom: 8px; }
@@ -358,7 +378,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 
 .fbtn {
   font-size: 10px; padding: 3px 8px; border-radius: var(--radius-pill);
-  border: 1px solid var(--border); background: var(--surface-base); color: #888;
+  border: 1px solid var(--border); background: var(--surface-base); color: var(--text-subtle);
   cursor: pointer; transition: all .15s; white-space: nowrap;
 }
 .fbtn:hover { border-color: var(--text-faint); color: #ccc; }
@@ -508,10 +528,14 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 .card:hover { border-color: var(--accent) !important; }
 .card.future { opacity: .55; border-style: dashed; }
 .card .name  { font-weight: 600; color: var(--text-strong); font-size: 12px; margin-bottom: 2px; }
-.card .area  { color: #666; font-size: 11px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .area  { color: var(--text-subtle); font-size: 11px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .meta  { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.card .badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: var(--radius-pill); text-transform: uppercase; }
-.card .future-tag { font-size: 10px; padding: 1px 6px; border-radius: var(--radius-pill); background: #2a1e35; color: var(--accent-future); border: 1px solid var(--accent-future); }
+.card .badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: var(--radius-pill); text-transform: uppercase; border: 1px solid transparent; }
+.card .badge.badge-verde    { background: #0a2a10; color: var(--level-verde);     border-color: var(--level-verde); }
+.card .badge.badge-amarillo { background: #3a2e00; color: var(--level-amarillo);  border-color: var(--level-amarillo); }
+.card .badge.badge-naranja  { background: #3a1800; color: var(--level-naranja);   border-color: var(--level-naranja); }
+.card .badge.badge-rojo     { background: #3a0000; color: var(--level-rojo-text); border-color: var(--level-rojo); }
+.card .future-tag { font-size: 10px; padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-raised); color: var(--text-muted); border: 1px solid var(--border); }
 .card .time  { font-size: 10px; color: var(--text-faint); }
 .card .desc  { font-size: 11px; color: var(--accent-bright); margin-top: 5px; line-height: 1.4; border-top: 1px solid var(--border); padding-top: 5px; }
 .fire-card .meta { justify-content: flex-start; flex-wrap: wrap; }
@@ -531,6 +555,30 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 .empty { text-align: center; padding: 24px 10px; color: var(--text-faint); font-size: 12px; }
 
 .card.highlighted { border-color: var(--text-strong) !important; background: var(--surface-raised); }
+
+/* Fichas agrupadas por nivel de peligro (colapsables con <details>) */
+.card-group { border-bottom: 1px solid var(--border-soft); }
+.card-group:last-child { border-bottom: none; }
+.card-group > summary {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 4px; cursor: pointer; list-style: none; user-select: none;
+}
+.card-group > summary::-webkit-details-marker { display: none; }
+.card-group > summary::marker { content: ""; }
+.card-group-caret {
+  color: var(--text-subtle); font-size: 10px; width: 9px; flex-shrink: 0;
+  transition: transform var(--t-fast);
+}
+.card-group:not([open]) .card-group-caret { transform: rotate(-90deg); }
+.card-group-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.card-group-name {
+  flex: 1; min-width: 0; font-size: 11px; font-weight: 600;
+  color: var(--text-body); text-transform: uppercase; letter-spacing: .3px;
+}
+.card-group-count {
+  font-size: 10px; color: var(--text-subtle); font-variant-numeric: tabular-nums;
+}
+.card-group-body { padding: 2px 2px 6px; }
 
 /* Controles flotantes de contexto sobre el mapa */
 #map-control-stack {
@@ -569,13 +617,9 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 
 /* Panel flotante de fichas de detalle (lista de avisos/focos) sobre el mapa */
 #detail-panel {
-  position: absolute;
-  left: 10px;
-  bottom: 30px;
-  z-index: 800;
-  width: 290px;
-  max-width: calc(100% - 20px);
-  max-height: calc(100% - 130px);
+  width: 250px;
+  max-width: 100%;
+  max-height: 340px;
   display: flex;
   flex-direction: column;
   background: var(--surface-overlay);
@@ -624,12 +668,50 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 #detail-panel.is-collapsed .detail-panel-body { display: none; }
 #detail-panel.is-collapsed .detail-panel-bar-caret { transform: rotate(-90deg); }
 
-/* Leyenda WMS */
-#wms-legend {
-  position: absolute; bottom: 84px; right: 10px; z-index: 900;
-  background: var(--surface-overlay); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 12px; max-width: 250px; pointer-events: none;
+/* Pila inferior-izquierda sobre el mapa: panel de fichas + leyenda */
+#map-bottom-left {
+  position: absolute;
+  left: 10px;
+  bottom: 30px;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  max-width: calc(100% - 20px);
+  max-height: calc(100% - 50px);
 }
+
+/* Leyenda WMS — panel plegable apilado bajo las fichas */
+#legend-panel {
+  width: 250px;
+  max-width: 100%;
+  max-height: 280px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-fab);
+  overflow: hidden;
+}
+#wms-legend {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+#legend-panel.is-collapsed #wms-legend { display: none !important; }
+#legend-panel.is-collapsed .detail-panel-bar { border-bottom: none; }
+#legend-panel.is-collapsed .detail-panel-bar-caret { transform: rotate(-90deg); }
+/* Cada capa de la leyenda es plegable */
+.leg-title { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 5px; }
+.leg-title::before {
+  content: "\25BE"; font-size: 9px; color: var(--text-subtle);
+  transition: transform var(--t-fast); flex-shrink: 0;
+}
+.leg-block.is-collapsed .leg-title::before { transform: rotate(-90deg); }
+.leg-block.is-collapsed > :not(.leg-title) { display: none; }
 
 /* Crédito permanente de fuentes de datos */
 #map-credits {
@@ -647,7 +729,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 .leg-dot   { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .leg-ring  { width: 11px; height: 11px; border-radius: 50%; border-style: solid; border-color: #ddd; background: #0000; flex-shrink: 0; }
 .leg-label { font-size: 10px; color: var(--text-muted); }
-.leg-note  { font-size: 10px; color: var(--text-faint); margin-top: 4px; font-style: italic; }
+.leg-note  { font-size: 9px; color: var(--text-faint); margin-top: 4px; font-style: italic; }
 .leg-subtitle { font-size: 10px; color: var(--text-subtle); margin: 7px 0 4px; }
 
 .flood-icon {
@@ -710,25 +792,73 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 }
 #chat-fab:hover { background: #2a3050; }
 #chat-fab:active { transform: scale(0.97); }
-.chat-fab-icon { font-size: 16px; }
+.chat-fab-icon { display: flex; align-items: center; color: var(--accent); }
 
-#chat-panel {
-  position: fixed; bottom: 18px; right: 18px; z-index: 1001;
-  width: 380px; height: 540px; max-height: calc(100vh - 36px);
+/* Compositor del asistente (entrada) anclado al fondo del sidebar */
+#chat-composer {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex; flex-direction: column;
-  background: var(--surface-panel); color: var(--text-body);
-  border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: var(--shadow-panel);
+  background: var(--surface-sunken);
+  border-top: 1px solid var(--border);
   font-family: var(--font-sans);
 }
+#chat-composer-header { padding: 9px 12px 6px; flex-shrink: 0; }
+#chat-composer .chat-form {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 0 12px 6px;
+  border-top: none;
+}
+#chat-composer .chat-input { flex: 1 1 auto; min-height: 40px; }
+#chat-composer #chat-send,
+#chat-composer #chat-cancel { width: 100%; min-width: 0; padding: 8px 14px; }
+
+/* Ventana flotante de conversacion sobre el mapa */
+#chat-panel {
+  position: absolute; bottom: 18px; right: 18px; z-index: 1001;
+  width: 380px; height: 440px;
+  max-width: calc(100% - 36px); max-height: calc(100% - 36px);
+  display: flex; flex-direction: column;
+  background: var(--surface-panel); color: var(--text-body);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  font-family: var(--font-sans);
+  transition: width var(--t-med), height var(--t-med);
+}
+#chat-panel.is-expanded { width: 560px; height: calc(100% - 36px); }
+.chat-ctrl {
+  background: none; border: none; color: var(--text-subtle);
+  font-size: 15px; line-height: 1; cursor: pointer; padding: 0 5px;
+}
+.chat-ctrl:hover { color: var(--text-strong); }
+
+/* Pildora minimizada del asistente */
+#chat-pill {
+  position: absolute; bottom: 18px; right: 18px; z-index: 1000;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-raised); color: var(--text-body);
+  border: 1px solid var(--accent); border-radius: var(--radius-pill);
+  font-family: var(--font-sans); font-size: 13px; font-weight: 600;
+  cursor: pointer; box-shadow: var(--shadow-fab);
+}
+#chat-pill:hover { background: #2a3050; }
+#chat-pill .chat-pill-icon { display: flex; align-items: center; color: var(--accent); }
+#chat-pill .chat-pill-count { color: var(--text-subtle); font-weight: 400; font-size: 11px; }
 
 #chat-panel-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px;
   background: var(--surface-sunken); border-bottom: 1px solid var(--border);
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
-.chat-panel-title { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+.chat-panel-title {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 700; color: #9db4d6; letter-spacing: .6px;
+}
+.chat-panel-title-icon { display: flex; align-items: center; color: #9db4d6; }
+.chat-panel-title-asistente { text-transform: uppercase; }
 .chat-panel-actions {
   display: flex;
   align-items: center;

@@ -30,4 +30,32 @@
       toggle.setAttribute('aria-expanded', String(!collapsed));
     });
   }
+
+  // Leyenda: plegado general del panel
+  var legendPanel = document.getElementById('legend-panel');
+  var legendToggle = document.getElementById('legend-toggle');
+  if (legendPanel && legendToggle) {
+    legendToggle.addEventListener('click', function () {
+      var collapsed = legendPanel.classList.toggle('is-collapsed');
+      legendToggle.setAttribute('aria-expanded', String(!collapsed));
+    });
+  }
+
+  // Leyenda: cada capa (bloque) plegable. app.js reescribe #wms-legend en cada
+  // actualizacion, asi que reconectamos los titulos con un MutationObserver.
+  var legendBody = document.getElementById('wms-legend');
+  if (legendBody) {
+    var wireLegendBlocks = function () {
+      var titles = legendBody.querySelectorAll('.leg-block > .leg-title');
+      for (var i = 0; i < titles.length; i++) {
+        if (titles[i].dataset.collapsibleWired) continue;
+        titles[i].dataset.collapsibleWired = '1';
+        titles[i].addEventListener('click', function () {
+          this.parentNode.classList.toggle('is-collapsed');
+        });
+      }
+    };
+    new MutationObserver(wireLegendBlocks).observe(legendBody, { childList: true });
+    wireLegendBlocks();
+  }
 })();
