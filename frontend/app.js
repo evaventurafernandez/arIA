@@ -505,6 +505,22 @@ const FIRMS_FRP_CLASSES = [
   { color: '#8E1B1B', label: '>200 MW: muy alto' },
 ];
 
+// Agrupacion de focos por intensidad FRP para las fichas de detalle plegables
+// (orden Muy alto -> Bajo, igual que el sentido del semaforo).
+const FIRE_GROUPS = [
+  { label: 'Muy alto (>200 MW)', color: '#8E1B1B' },
+  { label: 'Alto (50-200 MW)',   color: '#E94F37' },
+  { label: 'Medio (10-50 MW)',   color: '#F8961E' },
+  { label: 'Bajo (<10 MW)',      color: '#FFD166' },
+];
+function getFireGroupIndex(f) {
+  const frp = Number(f.frp) || 0;
+  if (frp >= 200) return 0;
+  if (frp >= 50)  return 1;
+  if (frp >= 10)  return 2;
+  return 3;
+}
+
 const FIRMS_CONFIDENCE_STYLES = {
   n: { label: 'nominal', weight: 1 },
   h: { label: 'alta', weight: 3 },
@@ -3220,7 +3236,7 @@ function syncAlertsListViewControls(nActive, nUpcoming) {
   const count = document.getElementById('list-count');
   const summaryText = alertsListView === 'active'
     ? `${nActive} act.`
-    : (nUpcoming > 0 ? `${nActive} act. · ${nUpcoming} próx.` : `${nActive} act.`);
+    : (nUpcoming > 0 ? `${nActive} act. - ${nUpcoming} próx.` : `${nActive} act.`);
   const summaryTitle = alertsListView === 'active'
     ? `${nActive} avisos activos para este filtro`
     : (nUpcoming > 0 ? `${nActive} avisos activos y ${nUpcoming} próximos para este filtro` : `${nActive} avisos activos para este filtro`);
@@ -3510,6 +3526,7 @@ function renderList() {
   const el    = document.getElementById('main-list');
   const title = document.getElementById('list-title');
   const listMode = getListMode();
+  updateDetailTabs();
 
   if (listMode === 'none') {
     title.textContent = 'Resultados';
@@ -3589,10 +3606,9 @@ function renderList() {
       return;
     }
     if (!visibleFires.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
-    el.innerHTML = visibleFires.map(f => {
+    const renderFireCard = (f) => {
       const lat = Number(f.latitude);
       const lon = Number(f.longitude);
-      const intensityLabel = getFireIntensityLabel(f);
       const intensityColor = getFireIntensityColor(f);
       const confidenceLabel = getFireConfidenceLabel(f);
       return `<div class="card fire-card" data-id="${f.id}"
@@ -3600,12 +3616,29 @@ function renderList() {
         <div class="name">${lat.toFixed(3)}, ${lon.toFixed(3)}</div>
         <div class="area">${escapeHtml(getFireDateTimeLabel(f))} · ${escapeHtml(f.satellite || f.firms_source || '')}</div>
         <div class="meta">
-          <span class="badge" style="background:${intensityColor}22;color:${intensityColor}">${escapeHtml(intensityLabel)}</span>
           <span class="confidence-badge">Confianza: ${escapeHtml(confidenceLabel)}</span>
           <span class="time">FRP: ${formatFireFrp(f.frp)} MW</span>
         </div>
         <div class="desc" data-role="fire-landcover">${buildFireLandcoverMarkup(f)}</div>
       </div>`;
+    };
+    // Focos recogidos por intensidad FRP (Muy alto -> Bajo); cada grupo es un
+    // <details> plegable. visibleFires ya viene ordenado por FRP descendente.
+    const fireBuckets = [[], [], [], []];
+    visibleFires.forEach(f => { fireBuckets[getFireGroupIndex(f)].push(f); });
+    el.innerHTML = FIRE_GROUPS.map((g, i) => {
+      const rows = fireBuckets[i];
+      if (!rows.length) return '';
+      const cards = rows.map(renderFireCard).join('');
+      return `<details class="card-group">
+        <summary class="card-group-header">
+          <span class="card-group-caret" aria-hidden="true">&#9662;</span>
+          <span class="card-group-dot" style="background:${g.color}"></span>
+          <span class="card-group-name" style="text-transform:none">${g.label}</span>
+          <span class="card-group-count">${rows.length}</span>
+        </summary>
+        <div class="card-group-body">${cards}</div>
+      </details>`;
     }).join('');
   }
 }
@@ -3624,10 +3657,13 @@ function updateListHeader(data) {
   } else if (listMode === 'fires') {
     if (alertsControl) alertsControl.hidden = true;
     if (firesCount) {
-      firesCount.hidden = false;
-      const total = Array.isArray(data) ? data.length : getRenderableFires().length;
-      firesCount.textContent = formatFireCount(total);
-      firesCount.title = `${formatFireCount(total)} en la lista`;
+      const both = showAlerts && showFires;   // con tabs el conteo ya esta en el tab Focos
+      firesCount.hidden = both;
+      if (!both) {
+        const total = Array.isArray(data) ? data.length : getRenderableFires().length;
+        firesCount.textContent = formatFireCount(total);
+        firesCount.title = `${formatFireCount(total)} en la lista`;
+      }
     }
   } else {
     if (alertsControl) alertsControl.hidden = true;
@@ -3635,7 +3671,27 @@ function updateListHeader(data) {
   }
 }
 
-// Zoom 
+// Selector Avisos/Focos del panel de fichas: visible solo con ambas capas en vivo activas.
+function updateDetailTabs() {
+  const tabs = document.getElementById('detail-tabs');
+  if (!tabs) return;
+  const both = showAlerts && showFires;
+  tabs.hidden = !both;
+  const titleEl = document.getElementById('list-title');
+  if (titleEl) titleEl.hidden = both;   // los tabs ya indican la lista activa
+  if (!both) return;
+  const mode = getListMode();
+  const tabA = document.getElementById('tab-alerts');
+  const tabF = document.getElementById('tab-fires');
+  if (tabA) tabA.classList.toggle('is-active', mode === 'alerts');
+  if (tabF) tabF.classList.toggle('is-active', mode === 'fires');
+  const ca = document.getElementById('tab-alerts-count');
+  const cf = document.getElementById('tab-fires-count');
+  if (ca) ca.textContent = '(' + getVisibleAlerts(getFilteredAlerts()).length + ')';
+  if (cf) cf.textContent = '(' + getRenderableFires(firesData).length + ')';
+}
+
+// Zoom
 function zoomToAlert(id) {
   const a = alertsData.find(x => x.id === id);
   if (!a || !a.polygon) return;
@@ -3714,6 +3770,15 @@ if (alertsViewToggle) {
     renderAll();
   });
 }
+
+// Selector Avisos/Focos del panel de fichas (cuando ambas capas en vivo activas)
+['tab-alerts', 'tab-fires'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('click', () => {
+    activeList = el.dataset.list;
+    renderList();
+  });
+});
 
 // Utilidades
 function parsePolygon(str) {

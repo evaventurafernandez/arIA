@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>arIA — Visor meteorológico de España</title>
+  <title>arIA - Asistente de Riesgos con Inteligencia Artificial</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="design-system/tokens.css"/>
   <link rel="stylesheet" href="style.css"/>
@@ -72,6 +72,11 @@
           <span class="detail-panel-bar-caret" aria-hidden="true">&#9662;</span>
         </button>
         <div id="detail-panel-body" class="detail-panel-body">
+          <!-- Selector Avisos/Focos: visible solo cuando ambas capas en vivo estan activas -->
+          <div id="detail-tabs" class="detail-tabs" role="tablist" hidden>
+            <button id="tab-alerts" class="detail-tab is-active" type="button" role="tab" data-list="alerts">Avisos <span id="tab-alerts-count" class="detail-tab-count">(0)</span></button>
+            <button id="tab-fires" class="detail-tab" type="button" role="tab" data-list="fires">Focos <span id="tab-fires-count" class="detail-tab-count">(0)</span></button>
+          </div>
           <div class="list-header">
             <span id="list-title">Avisos activos</span>
             <div class="list-header-actions">
@@ -207,13 +212,15 @@
         <div class="layer-subfilters">
           <div class="filter-block">
             <div class="section-title">Nivel de peligro</div>
-            <div class="filter-row" id="level-filters">
-              <button class="fbtn verde active"    data-level="Verde">Verde</button>
-              <button class="fbtn amarillo active" data-level="Amarillo">Amarillo</button>
-              <button class="fbtn naranja active"  data-level="Naranja">Naranja</button>
-              <button class="fbtn rojo active"     data-level="Rojo">Rojo</button>
+            <div class="filter-row level-segmented" id="level-filters" role="group" aria-label="Nivel de peligro">
+              <button class="fbtn verde active"    data-level="Verde"    title="Verde"    aria-label="Verde">V</button>
+              <button class="fbtn amarillo active" data-level="Amarillo" title="Amarillo" aria-label="Amarillo">A</button>
+              <button class="fbtn naranja active"  data-level="Naranja"  title="Naranja"  aria-label="Naranja">N</button>
+              <button class="fbtn rojo active"     data-level="Rojo"     title="Rojo"     aria-label="Rojo">R</button>
             </div>
-            <div class="filter-row" id="level-filters">
+            <!-- Todos/Ninguno: ocultos (la barra segmentada cubre la seleccion); se
+                 mantienen en el DOM porque app.js referencia .fbtn.all / .fbtn.none -->
+            <div class="filter-row" id="level-filters" hidden>
               <button class="fbtn all active"  data-level="all">Todos</button>
               <button class="fbtn none"        data-level="none">Ninguno</button>
             </div>
@@ -245,7 +252,7 @@
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#ffca3a"></span>
-        Histórico AEMET T.máx
+        Histórico AEMET - T.máx
         <input type="checkbox" id="chk-aemet_max_temp_history" />
       </label>
       <div class="burnt-area-layer-control">
@@ -263,10 +270,10 @@
 
     <!-- 3 · Contexto y riesgos naturales -->
     <div class="section-fixed">
-      <div class="section-title">Contexto y riesgos naturales</div>
+      <div class="section-title">Capas de contexto y riesgos naturales</div>
       <label class="layer-row">
         <span class="dot" style="background:#1e90ff"></span>
-        Zonas inundables T=10 (MITECO)
+        Zonas inundables T=10
         <input type="checkbox" id="chk-flood"/>
       </label>
       <!-- Nucleos y Carreteras se gobiernan desde los botones flotantes del mapa.
@@ -276,17 +283,17 @@
       <span id="roads-source-label" class="roads-source-label" aria-live="polite" hidden></span>
       <label class="layer-row">
         <span class="dot" style="background:#D97010"></span>
-        Peligro de incendio FWI (EFFIS)
+        Peligro de incendio FWI
         <input type="checkbox" id="chk-effis_fwi"/>
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#8B6914"></span>
-        Índice sequía DC (EFFIS)
+        Índice sequía DC
         <input type="checkbox" id="chk-effis_dc"/>
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#4ce600"></span>
-        Usos del suelo completo WMS (IGN)
+        Usos del suelo completo WMS
         <input type="checkbox" id="chk-corine_wms"/>
       </label>
     </div>
@@ -308,7 +315,7 @@
       </header>
       <form id="chat-form" class="chat-form" autocomplete="off">
         <textarea id="chat-input" class="chat-input"
-                  placeholder="Pregunta o pide una acción sobre el mapa. Ej.: «centra el mapa en Galicia» · «activa los focos FIRMS»"></textarea>
+                  placeholder="Pregunta o pide una acción sobre el mapa. Ej.: «Centra el mapa en Galicia», «activa los focos FIRMS»..."></textarea>
         <button id="chat-send" type="submit">Enviar</button>
         <button id="chat-cancel" type="button" aria-label="Detener consulta" hidden>Detener</button>
       </form>
