@@ -267,7 +267,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
 /* Sidebar */
 #sidebar {
   width: 290px; background: var(--surface-panel); border-left: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; flex-shrink: 0;
 }
 .section-fixed { padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .section-title { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
@@ -567,9 +567,66 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--text-strong); }
   color: var(--accent);
 }
 
+/* Panel flotante de fichas de detalle (lista de avisos/focos) sobre el mapa */
+#detail-panel {
+  position: absolute;
+  left: 10px;
+  bottom: 30px;
+  z-index: 800;
+  width: 290px;
+  max-width: calc(100% - 20px);
+  max-height: calc(100% - 130px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-fab);
+  overflow: hidden;
+}
+.detail-panel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  flex-shrink: 0;
+}
+.detail-panel-bar:hover .detail-panel-bar-caret { color: var(--text-muted); }
+.detail-panel-bar-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-label);
+  font-weight: 700;
+}
+.detail-panel-bar-caret {
+  color: var(--text-subtle);
+  font-size: 10px;
+  transition: transform var(--t-fast), color var(--t-fast);
+}
+.detail-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.detail-panel-body .list-header { flex-shrink: 0; }
+#detail-panel.is-collapsed { max-height: none; }
+#detail-panel.is-collapsed .detail-panel-bar { border-bottom: none; }
+#detail-panel.is-collapsed .detail-panel-body { display: none; }
+#detail-panel.is-collapsed .detail-panel-bar-caret { transform: rotate(-90deg); }
+
 /* Leyenda WMS */
 #wms-legend {
-  position: absolute; bottom: 18px; left: 10px; z-index: 900;
+  position: absolute; bottom: 84px; right: 10px; z-index: 900;
   background: var(--surface-overlay); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px; max-width: 250px; pointer-events: none;
 }

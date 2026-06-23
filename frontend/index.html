@@ -61,6 +61,34 @@
         </button>
       </div>
 
+      <!-- Panel flotante de fichas de detalle (lista de avisos/focos) -->
+      <aside id="detail-panel" aria-label="Fichas de detalle">
+        <button id="detail-panel-toggle" type="button" class="detail-panel-bar"
+                aria-expanded="true" aria-controls="detail-panel-body">
+          <span class="detail-panel-bar-title">Fichas de detalle</span>
+          <span class="detail-panel-bar-caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div id="detail-panel-body" class="detail-panel-body">
+          <div class="list-header">
+            <span id="list-title">Avisos activos</span>
+            <div class="list-header-actions">
+              <div id="alerts-view-control" class="alerts-view-control">
+                <span id="list-count" class="list-count-summary"></span>
+                <button id="alerts-view-toggle" class="alerts-view-switch" type="button" aria-pressed="false" title="Mostrando avisos activos y próximos en la lista y en el mapa">
+                  <span class="alerts-view-switch-label alerts-view-switch-label-all">Todos</span>
+                  <span class="alerts-view-switch-label alerts-view-switch-label-active">Activos</span>
+                  <span class="alerts-view-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+              <span id="fires-list-count" class="list-count-static" hidden></span>
+            </div>
+          </div>
+          <div id="main-list" class="list-scroll">
+            <div class="empty">Cargando...</div>
+          </div>
+        </div>
+      </aside>
+
       <!-- Leyenda WMS flotante -->
       <div id="wms-legend" style="display:none"></div>
 
@@ -218,25 +246,6 @@
         Usos del suelo completo WMS (IGN)
         <input type="checkbox" id="chk-corine_wms"/>
       </label>
-    </div>
-
-    <!-- Lista dinámica -->
-    <div class="list-header">
-      <span id="list-title">Avisos activos</span>
-      <div class="list-header-actions">
-        <div id="alerts-view-control" class="alerts-view-control">
-          <span id="list-count" class="list-count-summary"></span>
-          <button id="alerts-view-toggle" class="alerts-view-switch" type="button" aria-pressed="false" title="Mostrando avisos activos y próximos en la lista y en el mapa">
-            <span class="alerts-view-switch-label alerts-view-switch-label-all">Todos</span>
-            <span class="alerts-view-switch-label alerts-view-switch-label-active">Activos</span>
-            <span class="alerts-view-switch-thumb" aria-hidden="true"></span>
-          </button>
-        </div>
-        <span id="fires-list-count" class="list-count-static" hidden></span>
-      </div>
-    </div>
-    <div id="main-list" class="list-scroll">
-      <div class="empty">Cargando...</div>
     </div>
 
   </div>

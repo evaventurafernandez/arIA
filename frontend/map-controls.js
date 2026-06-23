@@ -20,4 +20,14 @@
   }
   wire('mapctrl-nucleos', 'chk-nucleos_poblacion');
   wire('mapctrl-roads', 'chk-roads');
+
+  // Panel flotante de fichas de detalle: colapsar / expandir
+  var panel = document.getElementById('detail-panel');
+  var toggle = document.getElementById('detail-panel-toggle');
+  if (panel && toggle) {
+    toggle.addEventListener('click', function () {
+      var collapsed = panel.classList.toggle('is-collapsed');
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+    });
+  }
 })();
