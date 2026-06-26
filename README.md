@@ -1,4 +1,4 @@
-# MeteoVisor Demo
+# arIA
 
 Demo web para visualizar avisos meteorológicos, focos de incendio y capas geográficas de riesgo en España. El proyecto combina una API con FastAPI y un frontend estático basado en Leaflet.
 
