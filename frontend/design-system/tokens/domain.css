@@ -1,0 +1,60 @@
+/* ============================================================
+   MeteoVisor — Domain / semantic colors
+   The map is the product, so its data palette is a first-class
+   token set. Two scales matter most:
+     1. AEMET alert levels (official 4-step danger scale)
+     2. NASA FIRMS FRP intensity (radiative power categories)
+   Plus EFFIS fire-weather classes, Copernicus burnt area,
+   and per-layer legend dots. Pulled verbatim from app.js.
+   ============================================================ */
+
+:root {
+  /* ---- AEMET alert levels (official danger scale) ---- */
+  --level-verde:     #4CAF50;  /* Verde    — no risk        */
+  --level-amarillo:  #FFD700;  /* Amarillo — be aware       */
+  --level-naranja:   #FFA500;  /* Naranja  — be prepared    */
+  --level-rojo:      #CC0000;  /* Rojo     — extreme danger */
+  --level-rojo-text: #ff6666;  /* rojo on dark fill         */
+
+  /* ---- NASA FIRMS — fire radiative power (MW) intensity ---- */
+  --frp-low:    #FFD166;  /* < 10 MW   — bajo      */
+  --frp-mid:    #F8961E;  /* 10–50 MW  — medio     */
+  --frp-high:   #E94F37;  /* 50–200 MW — alto      */
+  --frp-max:    #8E1B1B;  /* > 200 MW  — muy alto  */
+  --frp-history:#ff9d79;  /* historic detections   */
+
+  /* ---- EFFIS fire-weather danger ramp (FWI / DC) ---- */
+  --effis-low:        #9CFFC0;  /* Bajo        */
+  --effis-moderate:   #CDE24E;  /* Moderado    */
+  --effis-high:       #E6AC00;  /* Alto        */
+  --effis-very-high:  #D97010;  /* Muy alto    */
+  --effis-extreme:    #AD060E;  /* Extremo     */
+  --effis-very-extreme:#3A0015; /* Muy extremo */
+
+  /* ---- Copernicus burnt area ---- */
+  --burnt-fill:   #ff6b3d;
+  --burnt-shape:  #c24a00;
+  --burnt-stroke: #6e2300;
+
+  /* ---- Per-layer legend dots ---- */
+  --layer-flood:   #1e90ff;  /* zonas inundables       */
+  --layer-nucleos: #3f88c5;  /* núcleos de población   */
+  --layer-roads:   #D32F2F;  /* carreteras             */
+  --layer-corine:  #4ce600;  /* usos del suelo         */
+
+  /* ---- Status / feedback ---- */
+  --status-ok:      #4caf50;  /* WFS healthy, success     */
+  --status-info:    #29b6f6;  /* secondary source         */
+  --status-warning: #ffb300;  /* degraded / fallback      */
+  --status-error:   #e57373;  /* down / failed            */
+  --status-error-bg:#3a1d1d;  /* error message fill       */
+  --status-error-bd:#cc4444;  /* error message border     */
+
+  /* ============================================================
+     Semantic aliases — prefer these in component CSS
+     ============================================================ */
+  --text-link:        var(--accent-bright);
+  --surface-card:     var(--surface-base);
+  --surface-overlay:  rgba(26, 29, 39, 0.93);  /* floating legend  */
+  --surface-credit:   rgba(15, 17, 23, 0.80);  /* map credit chip  */
+}

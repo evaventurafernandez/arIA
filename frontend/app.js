@@ -505,6 +505,22 @@ const FIRMS_FRP_CLASSES = [
   { color: '#8E1B1B', label: '>200 MW: muy alto' },
 ];
 
+// Agrupacion de focos por intensidad FRP para las fichas de detalle plegables
+// (orden Muy alto -> Bajo, igual que el sentido del semaforo).
+const FIRE_GROUPS = [
+  { label: 'Muy alto (>200 MW)', color: '#8E1B1B' },
+  { label: 'Alto (50-200 MW)',   color: '#E94F37' },
+  { label: 'Medio (10-50 MW)',   color: '#F8961E' },
+  { label: 'Bajo (<10 MW)',      color: '#FFD166' },
+];
+function getFireGroupIndex(f) {
+  const frp = Number(f.frp) || 0;
+  if (frp >= 200) return 0;
+  if (frp >= 50)  return 1;
+  if (frp >= 10)  return 2;
+  return 3;
+}
+
 const FIRMS_CONFIDENCE_STYLES = {
   n: { label: 'nominal', weight: 1 },
   h: { label: 'alta', weight: 3 },
@@ -563,14 +579,20 @@ function getFireDateTimeLabel(f) {
 function updateLegend() {
   const el = document.getElementById('wms-legend');
   if (!el) return;
- 
+  const legendPanel = document.getElementById('legend-panel');
+
   const wmsKeys = Object.keys(wmsActive);
   const showNucleos = nucleosVisible && nucleosLayer;
   const showFirms = (showFires && !firesError) || (historicalFiresVisible && !historicalFiresError);
   const showAemetMaxTemp = aemetMaxTempVisible && !aemetMaxTempError;
-  if (!wmsKeys.length && !showNucleos && !showFirms && !showAemetMaxTemp) { el.style.display = 'none'; return; }
- 
+  if (!wmsKeys.length && !showNucleos && !showFirms && !showAemetMaxTemp) {
+    el.style.display = 'none';
+    if (legendPanel) legendPanel.hidden = true;
+    return;
+  }
+
   el.style.display = 'block';
+  if (legendPanel) legendPanel.hidden = false;
 
   const firmsHtml = showFirms ? (() => {
     const frpItems = FIRMS_FRP_CLASSES.map(i =>
@@ -1200,7 +1222,7 @@ function updateTimelineUI() {
   syncTimelinePanelsVisibility();
   const isNow = (tlCurrent - tlMin) < 60000;
   const badge = document.getElementById('tl-badge');
-  badge.textContent = isNow ? 'AHORA' : 'FUTURO';
+  badge.textContent = isNow ? 'AHORA' : 'PRÓXIMOS';
   badge.className = isNow ? '' : 'future';
   document.getElementById('tl-datetime').textContent =
     tlCurrent.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'short'})
@@ -3214,7 +3236,7 @@ function syncAlertsListViewControls(nActive, nUpcoming) {
   const count = document.getElementById('list-count');
   const summaryText = alertsListView === 'active'
     ? `${nActive} act.`
-    : (nUpcoming > 0 ? `${nActive} act. · ${nUpcoming} próx.` : `${nActive} act.`);
+    : (nUpcoming > 0 ? `${nActive} act. - ${nUpcoming} próx.` : `${nActive} act.`);
   const summaryTitle = alertsListView === 'active'
     ? `${nActive} avisos activos para este filtro`
     : (nUpcoming > 0 ? `${nActive} avisos activos y ${nUpcoming} próximos para este filtro` : `${nActive} avisos activos para este filtro`);
@@ -3253,7 +3275,10 @@ function populateEventFilter() {
   sel.innerHTML = '<option value="all">Todos los tipos</option>';
   tipos.forEach(t => {
     const o = document.createElement('option');
-    o.value = t; o.textContent = t; sel.appendChild(o);
+    o.value = t;
+    const corto = t.replace(/^Aviso\s+de\s+/i, '');
+    o.textContent = corto.charAt(0).toUpperCase() + corto.slice(1);
+    sel.appendChild(o);
   });
 }
 
@@ -3489,13 +3514,19 @@ function renderFires() {
 function highlightCard(id) {
   document.querySelectorAll('.card').forEach(c => c.classList.remove('highlighted'));
   const card = document.querySelector(`.card[data-id="${id}"]`);
-  if (card) { card.classList.add('highlighted'); card.scrollIntoView({ behavior:'smooth', block:'nearest' }); }
+  if (card) {
+    const grp = card.closest('details.card-group');
+    if (grp) grp.open = true;
+    card.classList.add('highlighted');
+    card.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
 }
 
 function renderList() {
   const el    = document.getElementById('main-list');
   const title = document.getElementById('list-title');
   const listMode = getListMode();
+  updateDetailTabs();
 
   if (listMode === 'none') {
     title.textContent = 'Resultados';
@@ -3522,7 +3553,7 @@ function renderList() {
       return da !== db ? da-db : (order[a.level]||9)-(order[b.level]||9);
     });
 
-    el.innerHTML = sorted.map(a => {
+    const renderAlertCard = (a) => {
       const future = !isActive(a);
       const desc = a.description ? `<div class="desc">${a.description}</div>` : '';
       const floodIcon = isFloodRelated(a.event)
@@ -3533,12 +3564,33 @@ function renderList() {
         <div class="name">${normalizeEvent(a.event)} ${floodIcon}</div>
         <div class="area">${a.area_name}</div>
         <div class="meta">
-          <span class="badge" style="background:${a.level_color}22;color:${a.level_color}">${a.level}</span>
           ${future ? `<span class="future-tag">Inicia ${fmtDate(a.onset)}</span>` : ''}
           <span class="time">${fmtDate(a.onset)}</span>
         </div>
         ${desc}
       </div>`;
+    };
+    // Las fichas se recogen agrupadas por nivel de peligro; cada grupo es
+    // un <details> expandible/contraible. Se conserva el orden activos->futuros
+    // dentro de cada nivel (heredado del 'sorted' previo).
+    const LEVEL_GROUP_ORDER = ['Rojo', 'Naranja', 'Amarillo', 'Verde'];
+    const byLevel = {};
+    sorted.forEach(a => { (byLevel[a.level] = byLevel[a.level] || []).push(a); });
+    const groupOrder = LEVEL_GROUP_ORDER.filter(lv => byLevel[lv]);
+    Object.keys(byLevel).forEach(lv => { if (!groupOrder.includes(lv)) groupOrder.push(lv); });
+    el.innerHTML = groupOrder.map(lv => {
+      const rows = byLevel[lv];
+      const color = rows[0].level_color;
+      const cards = rows.map(renderAlertCard).join('');
+      return `<details class="card-group">
+        <summary class="card-group-header">
+          <span class="card-group-caret" aria-hidden="true">&#9662;</span>
+          <span class="card-group-dot" style="background:${color}"></span>
+          <span class="card-group-name">${lv}</span>
+          <span class="card-group-count">${rows.length}</span>
+        </summary>
+        <div class="card-group-body">${cards}</div>
+      </details>`;
     }).join('');
 
   } else if (listMode === 'fires') {
@@ -3554,10 +3606,9 @@ function renderList() {
       return;
     }
     if (!visibleFires.length) { el.innerHTML = '<div class="empty">Sin focos activos en España</div>'; return; }
-    el.innerHTML = visibleFires.map(f => {
+    const renderFireCard = (f) => {
       const lat = Number(f.latitude);
       const lon = Number(f.longitude);
-      const intensityLabel = getFireIntensityLabel(f);
       const intensityColor = getFireIntensityColor(f);
       const confidenceLabel = getFireConfidenceLabel(f);
       return `<div class="card fire-card" data-id="${f.id}"
@@ -3565,12 +3616,29 @@ function renderList() {
         <div class="name">${lat.toFixed(3)}, ${lon.toFixed(3)}</div>
         <div class="area">${escapeHtml(getFireDateTimeLabel(f))} · ${escapeHtml(f.satellite || f.firms_source || '')}</div>
         <div class="meta">
-          <span class="badge" style="background:${intensityColor}22;color:${intensityColor}">${escapeHtml(intensityLabel)}</span>
           <span class="confidence-badge">Confianza: ${escapeHtml(confidenceLabel)}</span>
           <span class="time">FRP: ${formatFireFrp(f.frp)} MW</span>
         </div>
         <div class="desc" data-role="fire-landcover">${buildFireLandcoverMarkup(f)}</div>
       </div>`;
+    };
+    // Focos recogidos por intensidad FRP (Muy alto -> Bajo); cada grupo es un
+    // <details> plegable. visibleFires ya viene ordenado por FRP descendente.
+    const fireBuckets = [[], [], [], []];
+    visibleFires.forEach(f => { fireBuckets[getFireGroupIndex(f)].push(f); });
+    el.innerHTML = FIRE_GROUPS.map((g, i) => {
+      const rows = fireBuckets[i];
+      if (!rows.length) return '';
+      const cards = rows.map(renderFireCard).join('');
+      return `<details class="card-group">
+        <summary class="card-group-header">
+          <span class="card-group-caret" aria-hidden="true">&#9662;</span>
+          <span class="card-group-dot" style="background:${g.color}"></span>
+          <span class="card-group-name" style="text-transform:none">${g.label}</span>
+          <span class="card-group-count">${rows.length}</span>
+        </summary>
+        <div class="card-group-body">${cards}</div>
+      </details>`;
     }).join('');
   }
 }
@@ -3589,10 +3657,13 @@ function updateListHeader(data) {
   } else if (listMode === 'fires') {
     if (alertsControl) alertsControl.hidden = true;
     if (firesCount) {
-      firesCount.hidden = false;
-      const total = Array.isArray(data) ? data.length : getRenderableFires().length;
-      firesCount.textContent = formatFireCount(total);
-      firesCount.title = `${formatFireCount(total)} en la lista`;
+      const both = showAlerts && showFires;   // con tabs el conteo ya esta en el tab Focos
+      firesCount.hidden = both;
+      if (!both) {
+        const total = Array.isArray(data) ? data.length : getRenderableFires().length;
+        firesCount.textContent = formatFireCount(total);
+        firesCount.title = `${formatFireCount(total)} en la lista`;
+      }
     }
   } else {
     if (alertsControl) alertsControl.hidden = true;
@@ -3600,7 +3671,27 @@ function updateListHeader(data) {
   }
 }
 
-// Zoom 
+// Selector Avisos/Focos del panel de fichas: visible solo con ambas capas en vivo activas.
+function updateDetailTabs() {
+  const tabs = document.getElementById('detail-tabs');
+  if (!tabs) return;
+  const both = showAlerts && showFires;
+  tabs.hidden = !both;
+  const titleEl = document.getElementById('list-title');
+  if (titleEl) titleEl.hidden = both;   // los tabs ya indican la lista activa
+  if (!both) return;
+  const mode = getListMode();
+  const tabA = document.getElementById('tab-alerts');
+  const tabF = document.getElementById('tab-fires');
+  if (tabA) tabA.classList.toggle('is-active', mode === 'alerts');
+  if (tabF) tabF.classList.toggle('is-active', mode === 'fires');
+  const ca = document.getElementById('tab-alerts-count');
+  const cf = document.getElementById('tab-fires-count');
+  if (ca) ca.textContent = '(' + getVisibleAlerts(getFilteredAlerts()).length + ')';
+  if (cf) cf.textContent = '(' + getRenderableFires(firesData).length + ')';
+}
+
+// Zoom
 function zoomToAlert(id) {
   const a = alertsData.find(x => x.id === id);
   if (!a || !a.polygon) return;
@@ -3679,6 +3770,15 @@ if (alertsViewToggle) {
     renderAll();
   });
 }
+
+// Selector Avisos/Focos del panel de fichas (cuando ambas capas en vivo activas)
+['tab-alerts', 'tab-fires'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('click', () => {
+    activeList = el.dataset.list;
+    renderList();
+  });
+});
 
 // Utilidades
 function parsePolygon(str) {

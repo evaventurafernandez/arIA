@@ -3,21 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Visor de Alertas - España</title>
+  <title>arIA - Asistente de Riesgos con Inteligencia Artificial</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="design-system/tokens.css"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
 <header>
   <div class="header-left">
-    <h1>Visor de Alertas España</h1>
-    <span class="demo-badge">DEMO</span>
+    <h1>arIA</h1>
     <div id="map-meta">
       <span class="map-meta-item">
         <span class="map-meta-label">Zoom</span>
         <span id="map-zoom">--</span>
       </span>
-      <span class="map-meta-item">
+      <!-- BBOX oculto (el diseno simplifica a Zoom + Puntero); el elemento
+           se mantiene en el DOM porque app.js escribe en #visible-bbox -->
+      <span class="map-meta-item" hidden>
         <span class="map-meta-label">BBOX</span>
         <span id="visible-bbox">--</span>
       </span>
@@ -35,11 +37,115 @@
     <div id="map-stage">
       <div id="map"></div>
 
-      <!-- Leyenda WMS flotante -->
-      <div id="wms-legend" style="display:none"></div>
+      <!-- Controles flotantes de contexto sobre el mapa (Nucleos / Carreteras) -->
+      <div id="map-control-stack" role="group" aria-label="Capas de contexto sobre el mapa">
+        <button id="mapctrl-nucleos" type="button" class="map-ctrl-btn" aria-pressed="false"
+                title="Nucleos de poblacion (IGN)" aria-label="Nucleos de poblacion">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 21v-8l4-3 4 3v8"/>
+            <path d="M10 21v-11l5-3.5L20 10v11"/>
+            <path d="M1 21h22"/>
+            <path d="M14 13h2M14 16.5h2"/>
+            <path d="M5 17h2"/>
+          </svg>
+        </button>
+        <button id="mapctrl-roads" type="button" class="map-ctrl-btn" aria-pressed="false"
+                title="Carreteras (IDEE WFS + IGR-RT)" aria-label="Carreteras">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 21 9 3"/>
+            <path d="M19 21 15 3"/>
+            <path d="M12 6v2M12 11v2M12 16v2"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Pila inferior-izquierda sobre el mapa: fichas de detalle + leyenda -->
+      <div id="map-bottom-left">
+
+      <!-- Panel flotante de fichas de detalle (lista de avisos/focos) -->
+      <aside id="detail-panel" aria-label="Fichas de detalle">
+        <button id="detail-panel-toggle" type="button" class="detail-panel-bar"
+                aria-expanded="true" aria-controls="detail-panel-body">
+          <span class="detail-panel-bar-title">Fichas de detalle</span>
+          <span class="detail-panel-bar-caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div id="detail-panel-body" class="detail-panel-body">
+          <!-- Selector Avisos/Focos: visible solo cuando ambas capas en vivo estan activas -->
+          <div id="detail-tabs" class="detail-tabs" role="tablist" hidden>
+            <button id="tab-alerts" class="detail-tab is-active" type="button" role="tab" data-list="alerts">Avisos <span id="tab-alerts-count" class="detail-tab-count">(0)</span></button>
+            <button id="tab-fires" class="detail-tab" type="button" role="tab" data-list="fires">Focos <span id="tab-fires-count" class="detail-tab-count">(0)</span></button>
+          </div>
+          <div class="list-header">
+            <span id="list-title">Avisos activos</span>
+            <div class="list-header-actions">
+              <div id="alerts-view-control" class="alerts-view-control">
+                <span id="list-count" class="list-count-summary"></span>
+                <button id="alerts-view-toggle" class="alerts-view-switch" type="button" aria-pressed="false" title="Mostrando avisos activos y próximos en la lista y en el mapa">
+                  <span class="alerts-view-switch-label alerts-view-switch-label-all">Todos</span>
+                  <span class="alerts-view-switch-label alerts-view-switch-label-active">Activos</span>
+                  <span class="alerts-view-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+              <span id="fires-list-count" class="list-count-static" hidden></span>
+            </div>
+          </div>
+          <div id="main-list" class="list-scroll">
+            <div class="empty">Cargando...</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Leyenda plegable, apilada bajo el panel de fichas -->
+      <div id="legend-panel" class="is-collapsed" hidden>
+        <button id="legend-toggle" type="button" class="detail-panel-bar"
+                aria-expanded="false" aria-controls="wms-legend">
+          <span class="detail-panel-bar-title">Leyenda</span>
+          <span class="detail-panel-bar-caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div id="wms-legend" style="display:none"></div>
+      </div>
+
+      </div><!-- /#map-bottom-left -->
 
       <!-- Crédito permanente de fuentes de datos -->
       <div id="map-credits">Fuentes: AEMET &middot; NASA FIRMS &middot; Copernicus EMS &middot; IGN/CNIG</div>
+
+      <!-- Ventana flotante de conversacion del asistente (sobre el mapa) -->
+      <aside id="chat-panel" hidden aria-label="Conversación con arIA">
+        <header id="chat-panel-header">
+          <span class="chat-panel-title">
+            <span class="chat-panel-title-icon" aria-hidden="true">
+              <svg width="15" height="15" viewBox="-2 -1 28 28" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 13.5a7 7 0 0 1-7 7H7l-4 2 1.2-3.6A7 7 0 0 1 11 4h2"/>
+                <path d="M18 2.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"/>
+              </svg>
+            </span>
+            <span><span class="chat-panel-title-asistente">Asistente</span> arIA</span>
+          </span>
+          <div class="chat-panel-actions">
+            <button id="chat-minimize" type="button" class="chat-ctrl" aria-label="Minimizar" title="Minimizar">&#8212;</button>
+            <button id="chat-expand" type="button" class="chat-ctrl" aria-label="Expandir" title="Expandir">&#10530;</button>
+            <button id="chat-close" type="button" class="chat-ctrl" aria-label="Cerrar" title="Cerrar">&times;</button>
+          </div>
+        </header>
+        <div id="chat-messages" class="chat-messages"></div>
+      </aside>
+
+      <!-- Pildora minimizada del asistente -->
+      <button id="chat-pill" type="button" hidden aria-label="Mostrar conversación">
+        <span class="chat-pill-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="-2 -1 28 28" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 13.5a7 7 0 0 1-7 7H7l-4 2 1.2-3.6A7 7 0 0 1 11 4h2"/>
+            <path d="M18 2.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"/>
+          </svg>
+        </span>
+        <span>Asistente</span>
+        <span id="chat-pill-count" class="chat-pill-count">(0)</span>
+      </button>
     </div>
     <!-- Barra temporal -->
     <div id="timelines-bar" hidden>
@@ -89,19 +195,56 @@
 
   <div id="sidebar">
 
-    <!-- Capas datos -->
+    <div class="sidebar-layers">
+
+    <!-- 1 · Datos en vivo -->
     <div class="section-fixed">
-      <div class="section-title">Datos</div>
-      <label class="layer-row">
-        <span class="dot" style="background:#FFA500"></span>
-        Avisos AEMET
-        <input type="checkbox" id="chk-alerts" checked />
-      </label>
+      <div class="section-title">Datos en vivo</div>
+
+      <div class="layer-group">
+        <label class="layer-row">
+          <span class="dot" style="background:#FFA500"></span>
+          Avisos AEMET
+          <input type="checkbox" id="chk-alerts" checked />
+        </label>
+
+        <!-- Filtros de avisos, anidados bajo Avisos AEMET -->
+        <div class="layer-subfilters">
+          <div class="filter-block">
+            <div class="section-title">Nivel de peligro</div>
+            <div class="filter-row level-segmented" id="level-filters" role="group" aria-label="Nivel de peligro">
+              <button class="fbtn verde active"    data-level="Verde"    title="Verde"    aria-label="Verde">V</button>
+              <button class="fbtn amarillo active" data-level="Amarillo" title="Amarillo" aria-label="Amarillo">A</button>
+              <button class="fbtn naranja active"  data-level="Naranja"  title="Naranja"  aria-label="Naranja">N</button>
+              <button class="fbtn rojo active"     data-level="Rojo"     title="Rojo"     aria-label="Rojo">R</button>
+            </div>
+            <!-- Todos/Ninguno: ocultos (la barra segmentada cubre la seleccion); se
+                 mantienen en el DOM porque app.js referencia .fbtn.all / .fbtn.none -->
+            <div class="filter-row" id="level-filters" hidden>
+              <button class="fbtn all active"  data-level="all">Todos</button>
+              <button class="fbtn none"        data-level="none">Ninguno</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <div class="section-title">Tipo de aviso</div>
+            <select id="event-select">
+              <option value="all">Todos los tipos</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <label class="layer-row">
         <span class="dot" style="background:#E94F37"></span>
         Focos NASA FIRMS
         <input type="checkbox" id="chk-fires" checked />
       </label>
+    </div>
+
+    <!-- 2 · Datos históricos -->
+    <div class="section-fixed">
+      <div class="section-title section-title-row">Datos históricos<span class="section-range">1 may – 31 ago 2025</span></div>
       <label class="layer-row">
         <span class="dot" style="background:#ff9d79"></span>
         Histórico NASA FIRMS
@@ -109,18 +252,8 @@
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#ffca3a"></span>
-        Histórico AEMET calor
+        Histórico AEMET - T.máx
         <input type="checkbox" id="chk-aemet_max_temp_history" />
-      </label>
-    </div>
-
-    <!-- Capas de contexto WMS -->
-    <div class="section-fixed">
-      <div class="section-title">Capas de riesgo</div>
-      <label class="layer-row">
-        <span class="dot" style="background:#1e90ff"></span>
-        Zonas inundables T=10 (MITECO)
-        <input type="checkbox" id="chk-flood"/>
       </label>
       <div class="burnt-area-layer-control">
         <label class="layer-row">
@@ -133,109 +266,71 @@
           <button id="burnt-area-mode-cumulative" class="burnt-area-mode-option" type="button" data-burnt-area-mode="cumulative" aria-pressed="false">Acumulado</button>
         </div>
       </div>
+    </div>
+
+    <!-- 3 · Contexto y riesgos naturales -->
+    <div class="section-fixed">
+      <div class="section-title">Capas de contexto y riesgos naturales</div>
       <label class="layer-row">
-        <span class="dot" style="background:#3f88c5"></span>
-        Núcleos de población (IGN)
-        <input type="checkbox" id="chk-nucleos_poblacion"/>
+        <span class="dot" style="background:#1e90ff"></span>
+        Zonas inundables T=10
+        <input type="checkbox" id="chk-flood"/>
       </label>
-      <label class="layer-row">
-        <span class="dot" style="background:#D32F2F"></span>
-        Carreteras (IDEE WFS + IGR-RT)
-        <input type="checkbox" id="chk-roads"/>
-        <span id="roads-source-label" class="roads-source-label" aria-live="polite"></span>
-      </label>
+      <!-- Nucleos y Carreteras se gobiernan desde los botones flotantes del mapa.
+           Mantenemos sus controles ocultos para que app.js / map-controls.js sigan operando. -->
+      <input type="checkbox" id="chk-nucleos_poblacion" hidden />
+      <input type="checkbox" id="chk-roads" hidden />
+      <span id="roads-source-label" class="roads-source-label" aria-live="polite" hidden></span>
       <label class="layer-row">
         <span class="dot" style="background:#D97010"></span>
-        Peligro de incendio FWI (EFFIS)
+        Peligro de incendio FWI
         <input type="checkbox" id="chk-effis_fwi"/>
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#8B6914"></span>
-        Índice sequía DC (EFFIS)
+        Índice sequía DC
         <input type="checkbox" id="chk-effis_dc"/>
       </label>
       <label class="layer-row">
         <span class="dot" style="background:#4ce600"></span>
-        Usos del suelo completo WMS (IGN)
+        Usos del suelo completo WMS
         <input type="checkbox" id="chk-corine_wms"/>
       </label>
     </div>
+    </div><!-- /.sidebar-layers -->
 
-    <!-- Filtros -->
-    <div class="section-fixed">
-
-      <div class="filter-block">
-        <div class="section-title">Nivel de peligro</div>
-        <div class="filter-row" id="level-filters">
-          <button class="fbtn verde active"    data-level="Verde">Verde</button>
-          <button class="fbtn amarillo active" data-level="Amarillo">Amarillo</button>
-          <button class="fbtn naranja active"  data-level="Naranja">Naranja</button>
-          <button class="fbtn rojo active"     data-level="Rojo">Rojo</button>
-        </div>
-        <div class="filter-row" id="level-filters">
-          <button class="fbtn all active"  data-level="all">Todos</button>
-          <button class="fbtn none"        data-level="none">Ninguno</button>
-        </div>
-      </div>
-
-      <div class="filter-block">
-        <div class="section-title">Tipo de aviso</div>
-        <select id="event-select">
-          <option value="all">Todos los tipos</option>
-        </select>
-      </div>
-
-    </div>
-
-    <!-- Lista dinámica -->
-    <div class="list-header">
-      <span id="list-title">Avisos activos</span>
-      <div class="list-header-actions">
-        <div id="alerts-view-control" class="alerts-view-control">
-          <span id="list-count" class="list-count-summary"></span>
-          <button id="alerts-view-toggle" class="alerts-view-switch" type="button" aria-pressed="false" title="Mostrando avisos activos y próximos en la lista y en el mapa">
-            <span class="alerts-view-switch-label alerts-view-switch-label-all">Todos</span>
-            <span class="alerts-view-switch-label alerts-view-switch-label-active">Activos</span>
-            <span class="alerts-view-switch-thumb" aria-hidden="true"></span>
-          </button>
-        </div>
-        <span id="fires-list-count" class="list-count-static" hidden></span>
-      </div>
-    </div>
-    <div id="main-list" class="list-scroll">
-      <div class="empty">Cargando...</div>
-    </div>
+    <!-- Compositor del asistente arIA (entrada), anclado al fondo del sidebar -->
+    <aside id="chat-composer" aria-label="Asistente arIA">
+      <header id="chat-composer-header">
+        <span class="chat-panel-title">
+          <span class="chat-panel-title-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="-2 -1 28 28" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 13.5a7 7 0 0 1-7 7H7l-4 2 1.2-3.6A7 7 0 0 1 11 4h2"/>
+              <path d="M18 2.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"/>
+            </svg>
+          </span>
+          <span><span class="chat-panel-title-asistente">Asistente</span> arIA</span>
+        </span>
+      </header>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <textarea id="chat-input" class="chat-input"
+                  placeholder="Pregunta o pide una acción sobre el mapa. Ej.: «Centra el mapa en Galicia», «activa los focos FIRMS»..."></textarea>
+        <button id="chat-send" type="submit">Enviar</button>
+        <button id="chat-cancel" type="button" aria-label="Detener consulta" hidden>Detener</button>
+      </form>
+      <div id="chat-status" class="chat-status" aria-live="polite"></div>
+    </aside>
 
   </div>
 </div>
 
-<!-- Panel del chat LLM (Fase 2). Flotante, colapsable, esquina inferior derecha. -->
-<button id="chat-fab" type="button" aria-label="Abrir asistente">
-  <span class="chat-fab-icon">&#128172;</span>
-  <span class="chat-fab-text">Asistente</span>
-</button>
-
-<aside id="chat-panel" hidden aria-label="Asistente MeteoVisor">
-  <header id="chat-panel-header">
-    <span class="chat-panel-title">Asistente MeteoVisor</span>
-    <div class="chat-panel-actions">
-      <button id="chat-clear" type="button" aria-label="Limpiar conversación">Limpiar</button>
-      <button id="chat-panel-close" type="button" aria-label="Cerrar">&times;</button>
-    </div>
-  </header>
-  <div id="chat-messages" class="chat-messages"></div>
-  <form id="chat-form" class="chat-form" autocomplete="off">
-    <textarea id="chat-input" class="chat-input" rows="2"
-              placeholder="Pregunta o pide una accion sobre el mapa..."></textarea>
-    <button id="chat-send" type="submit">Enviar</button>
-    <button id="chat-cancel" type="button" aria-label="Detener consulta" hidden>Detener</button>
-  </form>
-  <div id="chat-status" class="chat-status" aria-live="polite"></div>
-</aside>
+<!-- El asistente arIA esta integrado en el sidebar (ver #chat-panel) -->
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.js"></script>
 <script src="app.js"></script>
 <script src="chat.js"></script>
+<script src="map-controls.js"></script>
 </body>
 </html>

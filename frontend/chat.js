@@ -568,39 +568,62 @@ class ChatClient {
 }
 
 (function initChat() {
-  const fab = document.getElementById('chat-fab');
-  const panel = document.getElementById('chat-panel');
-  const closeBtn = document.getElementById('chat-panel-close');
-  if (!fab || !panel) return;
+  const panel = document.getElementById('chat-panel');        // ventana flotante (conversacion)
+  const composer = document.getElementById('chat-composer');  // entrada en el sidebar
+  const pill = document.getElementById('chat-pill');
+  const pillCount = document.getElementById('chat-pill-count');
+  const minimizeBtn = document.getElementById('chat-minimize');
+  const expandBtn = document.getElementById('chat-expand');
+  const closeBtn = document.getElementById('chat-close');
+  if (!panel || !composer) return;
 
   const client = new ChatClient({
-    messagesEl: document.getElementById('chat-messages'),
-    formEl: document.getElementById('chat-form'),
+    messagesEl: document.getElementById('chat-messages'),   // conversacion -> ventana flotante
+    formEl: document.getElementById('chat-form'),           // entrada -> compositor del sidebar
     inputEl: document.getElementById('chat-input'),
     sendBtn: document.getElementById('chat-send'),
     cancelBtn: document.getElementById('chat-cancel'),
-    clearBtn: document.getElementById('chat-clear'),
+    clearBtn: closeBtn,                                      // cerrar (x) vacia la conversacion
     statusEl: document.getElementById('chat-status'),
     welcomeMessage: CHAT_WELCOME_MESSAGE,
   });
-
   client.renderWelcomeMessage();
 
-  fab.addEventListener('click', function () {
-    panel.hidden = false;
-    fab.hidden = true;
-    client.inputEl.focus();
-  });
-  closeBtn.addEventListener('click', function () {
-    panel.hidden = true;
-    fab.hidden = false;
-  });
-  document.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Escape' && !panel.hidden) {
-      panel.hidden = true;
-      fab.hidden = false;
+  let exchanges = 0;
+  function setPillCount() { if (pillCount) pillCount.textContent = '(' + exchanges + ')'; }
+  function showPanel() { panel.hidden = false; if (pill) pill.hidden = true; }
+  function minimizePanel() { panel.hidden = true; if (pill) pill.hidden = false; }
+
+  // Al enviar (boton o Enter), la ventana flotante aparece/se restaura.
+  // Envolvemos send() para detectar el envio antes de que limpie el input.
+  const origSend = client.send.bind(client);
+  client.send = function () {
+    if ((client.inputEl.value || '').trim()) {
+      exchanges += 1;
+      setPillCount();
+      showPanel();
     }
-  });
+    return origSend();
+  };
+
+  if (minimizeBtn) minimizeBtn.addEventListener('click', minimizePanel);
+  if (pill) pill.addEventListener('click', showPanel);
+  if (closeBtn) {
+    // clearBtn (chat.js) ya vacia la conversacion; aqui ocultamos y reseteamos.
+    closeBtn.addEventListener('click', function () {
+      panel.hidden = true;
+      if (pill) pill.hidden = true;
+      exchanges = 0;
+      setPillCount();
+    });
+  }
+  if (expandBtn) {
+    expandBtn.addEventListener('click', function () {
+      const expanded = panel.classList.toggle('is-expanded');
+      expandBtn.innerHTML = expanded ? '&#10529;' : '&#10530;';
+      expandBtn.title = expanded ? 'Contraer' : 'Expandir';
+    });
+  }
 
   window.chatClient = client;
 })();

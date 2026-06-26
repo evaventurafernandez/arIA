@@ -1,0 +1,35 @@
+/* ============================================================
+   MeteoVisor — Spacing & sizing tokens
+   Tight, utilitarian rhythm built on a 1px hairline grid.
+   The dense sidebar lives on a 4–12px scale; the map chrome
+   (chips, panels) on a slightly looser 8–20px scale.
+   ============================================================ */
+
+:root {
+  /* ---- Spacing scale ---- */
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  6px;
+  --space-4:  8px;
+  --space-5:  10px;
+  --space-6:  12px;
+  --space-7:  14px;
+  --space-8:  18px;
+  --space-9:  20px;
+  --space-10: 24px;
+
+  /* ---- Layout dimensions ---- */
+  --sidebar-width: 290px;
+  --header-pad-y:  10px;
+  --header-pad-x:  20px;
+  --panel-pad:     12px;
+  --chat-width:    380px;
+  --chat-height:   540px;
+
+  /* ---- Control sizes ---- */
+  --control-h:      24px;  /* chips, mode buttons        */
+  --toggle-h:       28px;  /* segmented / view switch    */
+  --hit-min:        24px;  /* dense control minimum      */
+  --dot:            9px;   /* layer color dot            */
+  --legend-dot:    10px;   /* square legend swatch       */
+}
